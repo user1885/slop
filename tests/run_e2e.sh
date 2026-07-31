@@ -1,11 +1,20 @@
 #!/bin/sh
-# End-to-end: compile a real slop program and run the result.
+# End-to-end: compile real slop programs and run what comes out.
 #
-# Everything else in the test suite checks a stage in isolation. This runs the
-# whole pipeline — lexer, parser, sema, lowering, backend — over
-# examples/demo.slop, which touches every construct in v0, and then *runs the
-# program* and compares what it printed. Nothing else proves the compiler
-# emits code that means what the source said.
+# Every other suite checks one stage in isolation. This one takes each program
+# in examples/ through the whole pipeline twice — once to LLVM IR and a native
+# binary, once to C and a native binary — runs both, and requires that they
+# print the same thing and that it matches the golden output.
+#
+# Running *both* backends is the point, not thoroughness for its own sake.
+# They fail differently, and each has caught bugs the other hid:
+#
+#   The C backend rounds every alloca up to a uint64_t of storage, so it
+#   survived a slot being written wider than it was allocated. Only the
+#   native build from the LLVM IR crashed.
+#
+#   The LLVM backend printed a whole-struct load into a memcpy argument
+#   without complaint. Only the C backend refused to emit it.
 #
 #   ./tests/run_e2e.sh [path/to/slop]
 #   ./tests/run_e2e.sh --update [path]
@@ -37,111 +46,101 @@ mkdir -p "$golden"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-src="$root/examples/demo.slop"
+cc=${CC:-cc}
 passed=0
 failed=0
 
-# The LLVM backend has to at least produce a module that passes ir_verify,
-# which the driver runs before handing anything to a backend.
-if "$slop" --backend=llvm "$src" > "$work/demo.ll" 2> "$work/ll.log"; then
-    echo "ok      llvm emit ($(wc -l < "$work/demo.ll") lines)"
-    passed=$((passed + 1))
-else
-    echo "FAIL    llvm emit"
-    sed 's/^/        /' "$work/ll.log"
-    failed=$((failed + 1))
-fi
-
-if command -v llvm-as > /dev/null 2>&1; then
-    if llvm-as "$work/demo.ll" -o /dev/null 2> "$work/as.log"; then
-        echo "ok      llvm-as accepts demo.ll"
-        passed=$((passed + 1))
-    else
-        echo "FAIL    llvm-as rejected demo.ll"
-        sed 's/^/        /' "$work/as.log"
-        failed=$((failed + 1))
+note_fail() {
+    echo "FAIL    $1"
+    if [ -n "${2:-}" ] && [ -f "$2" ]; then
+        sed 's/^/        /' "$2"
     fi
-else
-    echo "skip    llvm-as (not installed)"
-fi
+    failed=$((failed + 1))
+}
 
-# The LLVM path all the way to a native binary. This is the check that found
-# the short-circuit slot being written wider than it was allocated: the C
-# backend rounds every alloca up to a uint64_t, so it survived the overflow
-# and only the native build crashed. Two backends only cross-check each other
-# if both are actually run.
-if command -v llc > /dev/null 2>&1 && command -v cc > /dev/null 2>&1; then
-    if llc -relocation-model=pic -filetype=obj "$work/demo.ll" -o "$work/demo.o" \
-        2> "$work/llc.log" && cc -o "$work/demo_native" "$work/demo.o" 2>> "$work/llc.log"; then
-        set +e
-        "$work/demo_native" > "$work/native.txt" 2>&1
-        status=$?
-        set -e
-        if [ "$status" -ne 0 ]; then
-            echo "FAIL    native binary from LLVM IR exited $status"
-            sed 's/^/        /' "$work/native.txt"
-            failed=$((failed + 1))
-        elif diff -u "$golden/demo.out.expected" "$work/native.txt" > "$work/ndiff"; then
-            echo "ok      native binary from LLVM IR printed the expected output"
-            passed=$((passed + 1))
+note_ok() {
+    echo "ok      $1"
+    passed=$((passed + 1))
+}
+
+for src in "$root"/examples/*.slop; do
+    name=$(basename "$src" .slop)
+    expected="$golden/$name.out.expected"
+    got_c=""
+    got_llvm=""
+
+    # ---- the C backend, all the way to a running program -----------------
+    if "$slop" --backend=c "$src" > "$work/$name.c" 2> "$work/$name.emit.log" &&
+        [ ! -s "$work/$name.emit.log" ]; then
+        if "$cc" -std=c99 -Wall -Wextra -fno-builtin -o "$work/$name.c.bin" \
+            "$work/$name.c" 2> "$work/$name.cc.log" && [ ! -s "$work/$name.cc.log" ]; then
+            set +e
+            "$work/$name.c.bin" > "$work/$name.c.out" 2>&1
+            c_status=$?
+            set -e
+            got_c="$work/$name.c.out"
+            note_ok "$name: c backend built and ran (exit $c_status)"
         else
-            echo "FAIL    native binary from LLVM IR printed something else"
-            sed 's/^/        /' "$work/ndiff"
-            failed=$((failed + 1))
+            note_fail "$name: generated C did not compile cleanly" "$work/$name.cc.log"
         fi
     else
-        echo "FAIL    llc/link of demo.ll"
-        sed 's/^/        /' "$work/llc.log"
-        failed=$((failed + 1))
+        note_fail "$name: c backend failed" "$work/$name.emit.log"
     fi
-else
-    echo "skip    llc native build (llc or cc not found)"
-fi
 
-# The C backend is the one that can be taken all the way to a running program
-# without an LLVM install.
-"$slop" --backend=c "$src" > "$work/demo.c"
+    # ---- the LLVM backend, through llvm-as and llc ------------------------
+    if "$slop" --emit "$src" > "$work/$name.ll" 2> "$work/$name.ll.log"; then
+        note_ok "$name: llvm ir emitted ($(wc -l < "$work/$name.ll") lines)"
 
-cc=${CC:-cc}
-if ! command -v "$cc" > /dev/null 2>&1; then
-    echo "skip    c execution ($cc not found)"
-else
-    # -fno-builtin: slop's u8* is void * here, which does not match the
-    # compiler's built-in printf. See the comment in backend_c.c.
-    if "$cc" -std=c99 -Wall -Wextra -fno-builtin -o "$work/demo" "$work/demo.c" \
-        2> "$work/cc.log"; then
-        if [ -s "$work/cc.log" ]; then
-            echo "FAIL    generated C compiled with warnings"
-            sed 's/^/        /' "$work/cc.log"
-            failed=$((failed + 1))
-        else
-            set +e
-            "$work/demo" > "$work/out.txt" 2>&1
-            status=$?
-            set -e
-
-            if [ "$update" -eq 1 ]; then
-                cp "$work/out.txt" "$golden/demo.out.expected"
-                echo "updated $golden/demo.out.expected (exit $status)"
-            elif [ "$status" -ne 0 ]; then
-                echo "FAIL    compiled demo exited $status"
-                sed 's/^/        /' "$work/out.txt"
-                failed=$((failed + 1))
-            elif diff -u "$golden/demo.out.expected" "$work/out.txt" > "$work/diff"; then
-                echo "ok      compiled demo ran and printed the expected output"
-                passed=$((passed + 1))
+        if command -v llvm-as > /dev/null 2>&1; then
+            if llvm-as "$work/$name.ll" -o /dev/null 2> "$work/$name.as.log"; then
+                note_ok "$name: llvm-as accepts the module"
             else
-                echo "FAIL    compiled demo printed something else"
-                sed 's/^/        /' "$work/diff"
-                failed=$((failed + 1))
+                note_fail "$name: llvm-as rejected the module" "$work/$name.as.log"
             fi
         fi
+
+        if command -v llc > /dev/null 2>&1; then
+            if llc -relocation-model=pic -filetype=obj "$work/$name.ll" -o "$work/$name.o" \
+                2> "$work/$name.llc.log" &&
+                "$cc" -o "$work/$name.ll.bin" "$work/$name.o" 2>> "$work/$name.llc.log"; then
+                set +e
+                "$work/$name.ll.bin" > "$work/$name.ll.out" 2>&1
+                ll_status=$?
+                set -e
+                got_llvm="$work/$name.ll.out"
+                note_ok "$name: llvm backend built and ran (exit $ll_status)"
+            else
+                note_fail "$name: llc or link failed" "$work/$name.llc.log"
+            fi
+        else
+            echo "skip    $name: llvm toolchain not installed"
+        fi
     else
-        echo "FAIL    generated C did not compile"
-        sed 's/^/        /' "$work/cc.log"
-        failed=$((failed + 1))
+        note_fail "$name: llvm backend failed" "$work/$name.ll.log"
     fi
-fi
+
+    # ---- the two must agree, and match the golden -------------------------
+    if [ -n "$got_c" ] && [ -n "$got_llvm" ]; then
+        if diff -u "$got_llvm" "$got_c" > "$work/$name.cross"; then
+            note_ok "$name: both backends printed the same thing"
+        else
+            note_fail "$name: backends disagree (llvm left, c right)" "$work/$name.cross"
+        fi
+    fi
+
+    if [ -n "$got_c" ]; then
+        if [ "$update" -eq 1 ]; then
+            cp "$got_c" "$expected"
+            echo "updated $expected"
+        elif [ ! -f "$expected" ]; then
+            note_fail "$name: no golden output (run --update)" ""
+        elif diff -u "$expected" "$got_c" > "$work/$name.diff"; then
+            note_ok "$name: output matches the golden"
+        else
+            note_fail "$name: output changed" "$work/$name.diff"
+        fi
+    fi
+done
 
 if [ "$update" -eq 1 ]; then
     exit 0

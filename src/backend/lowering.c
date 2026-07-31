@@ -711,6 +711,12 @@ static IrValue *lower_expr(Lower *L, Expr *e) {
     switch (e->kind) {
     case EXPR_INT:
     case EXPR_CHAR:
+        /* An untyped literal adopts its context type, and that context can be
+         * a float: `7.as(f64)` gives the literal type f64, and `double 7` is
+         * not a thing — it has to be a float constant from the start. */
+        if (rt->kind == IR_TY_FLOAT) {
+            return ir_const_fp(L->m, rt, (double)e->u.ival);
+        }
         return ir_const_int(L->m, rt, e->u.ival);
     case EXPR_BOOL:
         return ir_const_int(L->m, rt, e->u.bval != 0 ? 1u : 0u);
@@ -730,8 +736,10 @@ static IrValue *lower_expr(Lower *L, Expr *e) {
             b = find_global(L, e->u.sval);
         }
         if (b != NULL) {
-            /* An array's value *is* its address: there is nothing to load. */
-            if (ty_is_aggregate(e->sem_type) && e->sem_type->kind == TY_ARRAY) {
+            /* An aggregate's value *is* its address: there is nothing to
+             * load, and a struct assignment is a memcpy between two of
+             * these. */
+            if (ty_is_aggregate(e->sem_type)) {
                 return b->addr;
             }
             return ir_build_load(&L->b, b->type, b->addr);
@@ -1096,7 +1104,9 @@ static IrValue *constant_of(Lower *L, Expr *e, IrType *t) {
     }
     switch (e->kind) {
     case EXPR_INT:
-    case EXPR_CHAR: return ir_const_int(L->m, t, e->u.ival);
+    case EXPR_CHAR:
+        return t->kind == IR_TY_FLOAT ? ir_const_fp(L->m, t, (double)e->u.ival)
+                                      : ir_const_int(L->m, t, e->u.ival);
     case EXPR_BOOL: return ir_const_int(L->m, t, e->u.bval != 0 ? 1u : 0u);
     case EXPR_FLOAT: return ir_const_fp(L->m, t, e->u.fval);
     case EXPR_NULL: return ir_const_null(L->m);

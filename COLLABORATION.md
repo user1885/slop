@@ -291,11 +291,23 @@ Read this before planning, so you do not re-derive it.
   warning-free under `-Wall -Wextra -fno-builtin`. Both programs print
   identical, correct output. `tests/run_e2e.sh` runs all of it and skips the
   LLVM half cleanly when no toolchain is installed.
-  **Run both backends, not one.** The two disagree in exactly the places a
-  bug hides: the C backend rounds every alloca up to a `uint64_t`, so it
-  quietly survived a slot being written wider than it was allocated, while
-  the native build segfaulted. That bug lived through a full review, a golden
-  test and a run of the C output, and only the LLVM path found it.
+  **Run both backends, not one.** They fail differently, and each has caught
+  bugs the other hid. The C backend rounds every alloca up to a `uint64_t`,
+  so it survived a slot written wider than it was allocated while the native
+  LLVM build segfaulted. The LLVM printer happily emitted a whole-struct load
+  into a `memcpy` argument, and only the C backend refused to write it.
+  Neither bug was visible in review.
+- **`examples/conformance.slop` is the language's own test.** 59 checks with
+  known answers — precedence, signedness, conversions, short-circuiting,
+  loops, `match`, struct layout and copying, arrays, pointer arithmetic, the
+  common-prefix trick, strings — each printing its verdict, with the exit
+  status as the result. Both backends run it and must print the same thing.
+  Add a case here when you add a semantic, not just a parser case.
+  One thing it pins that the grammar does not say out loud: division
+  truncates toward zero while an arithmetic shift floors, so `-7 / 2` is -3
+  and `-7 >> 1` is -4.
+  Note `sizeof` sits at the unary level, so `sizeof(T).as(i64)` does not
+  parse — `(sizeof(T)).as(i64)` does.
 - **`ir_verify` owns the checks LLVM cannot make.** With opaque pointers LLVM
   accepts a store of any type through any pointer, so writing a slot wider
   than it was allocated is a type error nowhere and a stack overflow at run

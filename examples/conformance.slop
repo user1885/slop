@@ -1,0 +1,319 @@
+# conformance.slop — checks v0 semantics against known answers.
+#
+# demo.slop shows the language being used; this one interrogates it. Every
+# check prints its own verdict and bumps a counter, so the program's output
+# is the report and its exit status is the result: 0 when every check passed.
+#
+# It exists because two backends can only cross-check each other on code that
+# actually runs, and the more corners a program turns, the more places they
+# can disagree.
+
+extern "c" {
+    fn printf(u8* fmt, ...) -> i32;
+    fn malloc(u64 size) -> void*;
+}
+
+let mut i32 g_checks = 0;
+let mut i32 g_failures = 0;
+
+fn check(u8* what, i64 got, i64 want) -> void {
+    g_checks += 1;
+    if got != want {
+        g_failures += 1;
+        printf("FAIL %-28s got %lld, want %lld\n", what, got, want);
+        return;
+    }
+    printf("ok   %-28s %lld\n", what, got);
+}
+
+# ----------------------------------------------------------- arithmetic
+
+fn check_precedence() -> void {
+    let i32 a = 6;
+    let i32 b = 7;
+    let i32 c = 2;
+
+    # Bitwise binds tighter than comparison, unlike C.
+    check("a & b == c", (a & b == c).as(i64), 0);
+    check("a | b ^ c & a", (a | b ^ c & a).as(i64), 7);
+    check("a + b * c", (a + b * c).as(i64), 20);
+    check("a - b - c", (a - b - c).as(i64), -3);
+    check("a << c >> 1", (a << c >> 1).as(i64), 12);
+    check("-a.as(i64)", -a.as(i64), -6);
+    check("~a & 0xFF", (~a & 0xFF).as(i64), 249);
+}
+
+# Signedness lives in the type, so the same bits divide and shift differently.
+fn check_signedness() -> void {
+    let i32 neg = -7;
+    let u32 big = 4294967289;      # the same bits as -7
+    let i32 sdiv = neg / 2;
+    let u32 udiv = big / 2;
+
+    # Division truncates toward zero, while an arithmetic shift floors, so
+    # -7 / 2 and -7 >> 1 deliberately disagree.
+    check("signed division", sdiv.as(i64), -3);
+    check("unsigned division", udiv.as(i64), 2147483644);
+    check("arithmetic shift", (neg >> 1).as(i64), -4);
+    check("logical shift", (big >> 1).as(i64), 2147483644);
+    check("signed compare", (neg < 0).as(i64), 1);
+    check("unsigned compare", (big < 1).as(i64), 0);
+}
+
+fn check_conversions() -> void {
+    let i8 small = -1;
+    let u8 usmall = 255;
+    let i64 widened = small.as(i64);
+    let i64 zeroed = usmall.as(i64);
+    let i64 truncated = 300;
+    let f64 f = 2.5;
+
+    check("sign extension", widened, -1);
+    check("zero extension", zeroed, 255);
+    check("truncation", truncated.as(i8).as(i64), 44);
+    check("float to int", f.as(i64), 2);
+    check("int to float", 7.as(f64).as(i64), 7);
+    check("float narrowing", 1.5.as(f32).as(f64).as(i64), 1);
+}
+
+# ------------------------------------------------------------ control flow
+
+fn check_short_circuit() -> void {
+    let mut i32 calls = 0;
+    let i32 zero = 0;
+
+    # The right side must not run when the left already decides it. If it
+    # did, the divide would trap.
+    let mut b8 ok = false;
+    if zero != 0 && 10 / zero > 0 {
+        ok = true;
+    }
+    check("&& short-circuits", ok.as(i64), 0);
+
+    ok = false;
+    if zero == 0 || 10 / zero > 0 {
+        ok = true;
+    }
+    check("|| short-circuits", ok.as(i64), 1);
+
+    calls += 1;
+    check("both operands typed", (true && true).as(i64), 1);
+    check("mixed widths", (calls > 0 && calls < 2).as(i64), 1);
+}
+
+fn check_loops() -> void {
+    let mut i32 sum = 0;
+    let mut i32 i = 0;
+    while i < 10 {
+        i += 1;
+        if i == 3 {
+            continue;
+        }
+        if i == 8 {
+            break;
+        }
+        sum += i;
+    }
+    check("break and continue", sum.as(i64), 1 + 2 + 4 + 5 + 6 + 7);
+
+    let mut i32 nested = 0;
+    let mut i32 outer = 0;
+    while outer < 3 {
+        let mut i32 inner = 0;
+        while inner < 3 {
+            inner += 1;
+            if inner == 2 {
+                continue;
+            }
+            nested += 1;
+        }
+        outer += 1;
+    }
+    check("nested loops", nested.as(i64), 6);
+}
+
+enum Color { RED, GREEN, BLUE }
+enum Flag : u8 { OFF = 0, ON = 1, BOTH = 3 }
+
+fn classify(i32 n) -> i64 {
+    match n {
+        0 => return 100;
+        1, 2 => return 200;
+        'a' => return 300;
+        _ => return 400;
+    }
+}
+
+fn check_match() -> void {
+    check("match single label", classify(0), 100);
+    check("match shared arm", classify(1), 200);
+    check("match shared arm 2", classify(2), 200);
+    check("match char label", classify(97), 300);
+    check("match wildcard", classify(55), 400);
+
+    # Enum members are global constants numbered from 0 unless overridden.
+    check("enum implicit", RED.as(i64), 0);
+    check("enum counts up", BLUE.as(i64), 2);
+    check("enum explicit", BOTH.as(i64), 3);
+
+    let Color c = GREEN;
+    let mut i64 seen = 0;
+    match c {
+        RED => seen = 1;
+        GREEN => seen = 2;
+        BLUE => seen = 3;
+    }
+    check("match on enum", seen, 2);
+}
+
+# ------------------------------------------------------- memory and layout
+
+struct Point { i32 x; i32 y; }
+struct Nested { u8 tag; Point p; i64 total; }
+
+fn sum_point(Point* p) -> i64 {
+    return p.x.as(i64) + p.y.as(i64);
+}
+
+fn check_structs() -> void {
+    let mut Point p;
+    p.x = 3;
+    p.y = 4;
+    check("struct fields", sum_point(&p), 7);
+
+    # Declared without an initializer, so every field is zero.
+    let mut Nested n;
+    check("zero initialized", n.total + n.p.x.as(i64) + n.tag.as(i64), 0);
+
+    n.tag = 9;
+    n.p.x = 5;
+    n.p.y = 6;
+    n.total = sum_point(&n.p);
+    check("nested field write", n.total, 11);
+    check("field after nested", n.tag.as(i64), 9);
+
+    # Assigning a struct copies it.
+    let mut Point q;
+    q = p;
+    q.x = 99;
+    check("struct copy is a copy", sum_point(&p), 7);
+    check("copied value", sum_point(&q), 103);
+
+    check("sizeof struct", (sizeof(Point)).as(i64), 8);
+    check("sizeof padded", (sizeof(Nested)).as(i64), 24);
+    check("sizeof array", (sizeof(i32[10])).as(i64), 40);
+    check("sizeof pointer", (sizeof(Point*)).as(i64), 8);
+}
+
+fn check_arrays() -> void {
+    let mut i32[8] xs;
+    let mut i32 i = 0;
+    while i < 8 {
+        xs[i] = i * i;
+        i += 1;
+    }
+    check("array write and read", xs[5].as(i64), 25);
+    check("array zeroed then set", xs[0].as(i64), 0);
+
+    let mut i64 total = 0;
+    i = 0;
+    while i < 8 {
+        total += xs[i].as(i64);
+        i += 1;
+    }
+    check("array sum", total, 140);
+
+    # An array of structs, indexed and reached through a pointer.
+    let mut Point[4] pts;
+    i = 0;
+    while i < 4 {
+        pts[i].x = i;
+        pts[i].y = i + 1;
+        i += 1;
+    }
+    check("array of structs", sum_point(&pts[2]), 5);
+}
+
+fn check_pointers() -> void {
+    let mut i32[6] xs;
+    let mut i32 i = 0;
+    while i < 6 {
+        xs[i] = i * 10;
+        i += 1;
+    }
+
+    let i32* base = &xs[0];
+    let i32* third = base + 2;
+
+    # Pointer arithmetic scales by the pointee, not by bytes.
+    check("pointer add", (*third).as(i64), 20);
+    check("pointer difference", third - base, 2);
+    check("deref after add", (*(base + 5)).as(i64), 50);
+
+    let mut i32* walk = base;
+    let mut i64 sum = 0;
+    while walk != base + 6 {
+        sum += (*walk).as(i64);
+        walk += 1;
+    }
+    check("pointer walk", sum, 150);
+
+    # Byte arithmetic needs an explicit cast to u8*, which is the point.
+    let u8* bytes = base.as(u8*);
+    let u8* second = bytes + 4;
+    check("byte arithmetic", (*second.as(i32*)).as(i64), 10);
+
+    let i32* null_ptr = null;
+    check("null compares equal", (null_ptr == null).as(i64), 1);
+}
+
+# The common-prefix trick: struct layout is a guarantee, so a pointer to one
+# struct can be read as a pointer to another that starts the same way.
+struct Base { i32 kind; }
+struct Derived { i32 kind; i64 payload; }
+
+fn kind_of(Base* b) -> i64 {
+    return b.kind.as(i64);
+}
+
+fn check_prefix() -> void {
+    let Derived* d = malloc(sizeof(Derived)).as(Derived*);
+    d.kind = 7;
+    d.payload = 1234;
+    check("common prefix read", kind_of(d.as(Base*)), 7);
+    check("payload intact", d.payload, 1234);
+}
+
+fn check_strings() -> void {
+    let u8* s = "slop";
+    check("string first byte", s[0].as(i64), 's'.as(i64));
+    check("string is nul terminated", s[4].as(i64), 0);
+
+    let mut i32 len = 0;
+    while s[len] != '\0' {
+        len += 1;
+    }
+    check("string length", len.as(i64), 4);
+}
+
+fn main() -> i32 {
+    printf("slop conformance\n\n");
+
+    check_precedence();
+    check_signedness();
+    check_conversions();
+    check_short_circuit();
+    check_loops();
+    check_match();
+    check_structs();
+    check_arrays();
+    check_pointers();
+    check_prefix();
+    check_strings();
+
+    printf("\n%d checks, %d failures\n", g_checks, g_failures);
+    if g_failures != 0 {
+        return 1;
+    }
+    return 0;
+}

@@ -1,0 +1,63 @@
+slop conformance
+
+ok   a & b == c                   0
+ok   a | b ^ c & a                7
+ok   a + b * c                    20
+ok   a - b - c                    -3
+ok   a << c >> 1                  12
+ok   -a.as(i64)                   -6
+ok   ~a & 0xFF                    249
+ok   signed division              -3
+ok   unsigned division            2147483644
+ok   arithmetic shift             -4
+ok   logical shift                2147483644
+ok   signed compare               1
+ok   unsigned compare             0
+ok   sign extension               -1
+ok   zero extension               255
+ok   truncation                   44
+ok   float to int                 2
+ok   int to float                 7
+ok   float narrowing              1
+ok   && short-circuits            0
+ok   || short-circuits            1
+ok   both operands typed          1
+ok   mixed widths                 1
+ok   break and continue           25
+ok   nested loops                 6
+ok   match single label           100
+ok   match shared arm             200
+ok   match shared arm 2           200
+ok   match char label             300
+ok   match wildcard               400
+ok   enum implicit                0
+ok   enum counts up               2
+ok   enum explicit                3
+ok   match on enum                2
+ok   struct fields                7
+ok   zero initialized             0
+ok   nested field write           11
+ok   field after nested           9
+ok   struct copy is a copy        7
+ok   copied value                 103
+ok   sizeof struct                8
+ok   sizeof padded                24
+ok   sizeof array                 40
+ok   sizeof pointer               8
+ok   array write and read         25
+ok   array zeroed then set        0
+ok   array sum                    140
+ok   array of structs             5
+ok   pointer add                  20
+ok   pointer difference           2
+ok   deref after add              50
+ok   pointer walk                 150
+ok   byte arithmetic              10
+ok   null compares equal          1
+ok   common prefix read           7
+ok   payload intact               1234
+ok   string first byte            115
+ok   string is nul terminated     0
+ok   string length                4
+
+59 checks, 0 failures
