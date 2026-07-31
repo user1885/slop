@@ -19,12 +19,19 @@ typedef struct {
     const char *file; /* used when a position carries no file of its own */
     int count;        /* errors seen */
     int reported;     /* errors printed, plus one for the cutoff notice */
+    int last_printed; /* did the most recent error reach stderr? */
 } Diag;
 
 void diag_init(Diag *d, const char *file);
 
 /* Prints `file:line:col: error: ...` to stderr and bumps the count. */
 void diag_error(Diag *d, SrcPos pos, const char *fmt, ...);
+
+/* A follow-up line for the error just reported: where the first declaration
+ * was, where a binding was introduced. Never counts as an error, and prints
+ * only when that error printed, so a suppressed cascade does not leak
+ * notes. */
+void diag_note(Diag *d, SrcPos pos, const char *fmt, ...);
 
 int diag_error_count(const Diag *d);
 

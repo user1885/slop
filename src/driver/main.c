@@ -1,4 +1,4 @@
-/* slop v0 — lexes and parses a file, then dumps the AST.
+/* slop v0 — lexes, parses and checks its arguments, then dumps the AST.
  * `--tokens` stops after the lexer and dumps the token stream instead. */
 #include "ast/ast_dump.h"
 #include "backend/backend.h"
@@ -6,11 +6,24 @@
 #include "driver/token_dump.h"
 #include "lexer/lexer.h"
 #include "parser/parser.h"
+#include "sema/sema.h"
 #include "support/arena.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* One source file on its way through the front end. Everything here has to
+ * stay alive until the last tree built from it is gone: names in the AST
+ * point into `src`. */
+typedef struct {
+    const char *path;
+    char *src;
+    Lexer lexer;
+    Token *tokens;
+    size_t ntokens;
+    Program *prog;
+} Unit;
 
 static int lex_file(const char *path) {
     size_t len = 0;
@@ -37,50 +50,93 @@ static int lex_file(const char *path) {
     return errors != 0;
 }
 
-static int parse_file(const char *path) {
-    size_t len = 0;
-    char *src = source_file_read(path, &len);
-    if (src == NULL) {
-        return 1;
-    }
+static void unit_free(Unit *u) {
+    free(u->tokens);
+    lexer_free(&u->lexer);
+    free(u->src);
+}
 
-    Lexer lx;
-    lexer_init(&lx, path, src, len);
-
-    Token *tokens = NULL;
-    size_t count = 0;
-    (void)lexer_lex_all(&lx, &tokens, &count);
-
-    /* Lexical errors ride the token stream as TOK_ERROR; the parser reports
-     * them as it walks past, so both kinds come out in source order. */
+/* Every file goes through together: declaration order does not matter in
+ * slop, so sema cannot check one body until it has seen every top level. */
+static int compile(char **paths, int npaths, int parse_only) {
     Arena *arena = arena_new(0);
+    Unit *units = calloc((size_t)npaths, sizeof(Unit));
+    Program **progs = calloc((size_t)npaths, sizeof(Program *));
+    int nunits = 0;
     int errors = 0;
-    Program *prog = parse_program(arena, tokens, count, path, &errors);
+    int i;
 
-    if (errors == 0) {
-        ast_dump(stdout, prog);
-    } else {
-        fprintf(stderr, "%s: %d error(s)\n", path, errors);
+    if (units == NULL || progs == NULL) {
+        fprintf(stderr, "slop: out of memory\n");
+        exit(1);
     }
 
-    /* The AST points into `src` for identifiers, so that buffer is freed
-     * last. String literals were copied into the arena, so the tree does not
-     * depend on the lexer's pool. */
+    for (i = 0; i < npaths; i++) {
+        Unit *u = &units[nunits];
+        size_t len = 0;
+        int parse_errors = 0;
+
+        u->path = paths[i];
+        u->src = source_file_read(u->path, &len);
+        if (u->src == NULL) {
+            errors++;
+            continue;
+        }
+        lexer_init(&u->lexer, u->path, u->src, len);
+        (void)lexer_lex_all(&u->lexer, &u->tokens, &u->ntokens);
+
+        /* Lexical errors ride the token stream as TOK_ERROR; the parser
+         * reports them as it walks past, so both kinds come out in source
+         * order. */
+        u->prog = parse_program(arena, u->tokens, u->ntokens, u->path, &parse_errors);
+        errors += parse_errors;
+        progs[nunits] = u->prog;
+        nunits++;
+    }
+
+    /* A tree the parser recovered in has NULL children; sema would have to
+     * guess at what they were, so it does not run at all. */
+    if (errors == 0 && parse_only) {
+        /* No sema means no sem_type anywhere, which is what the NULL printer
+         * is for. The parser's own tests run with this: plenty of slop parses
+         * and can never type-check — `f(x)(x)` has no function pointer to be
+         * — so pinning the parser's output cannot go through sema. */
+        for (i = 0; i < nunits; i++) {
+            ast_dump(stdout, progs[i], NULL);
+        }
+    } else if (errors == 0) {
+        errors = sema_check(arena, progs, (size_t)nunits);
+        if (errors == 0) {
+            for (i = 0; i < nunits; i++) {
+                ast_dump(stdout, progs[i], sema_print_type);
+            }
+        }
+    }
+    if (errors != 0) {
+        fprintf(stderr, "%d error(s)\n", errors);
+    }
+
+    for (i = 0; i < nunits; i++) {
+        unit_free(&units[i]);
+    }
+    free(units);
+    free(progs);
     arena_free(arena);
-    free(tokens);
-    lexer_free(&lx);
-    free(src);
     return errors != 0;
 }
 
 int main(int argc, char **argv) {
     int dump_tokens = 0;
+    int parse_only = 0;
     int files = 0;
     int failed = 0;
+    int i;
 
-    for (int i = 1; i < argc; i++) {
+    for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tokens") == 0) {
             dump_tokens = 1;
+        } else if (strcmp(argv[i], "--parse-only") == 0) {
+            parse_only = 1;
         } else if (strcmp(argv[i], "--list-backends") == 0) {
             backend_list(stdout);
             return 0;
@@ -89,7 +145,7 @@ int main(int argc, char **argv) {
         }
     }
     if (files == 0) {
-        fprintf(stderr, "usage: slop [--tokens] <file.slop>...\n");
+        fprintf(stderr, "usage: slop [--tokens | --parse-only] <file.slop>...\n");
         fprintf(stderr, "       slop --list-backends\n");
         /* --backend=<name> arrives with lowering: choosing a backend is only
          * meaningful once there is an IrModule to hand it, and building one
@@ -98,11 +154,30 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--tokens") == 0) {
-            continue;
+    if (dump_tokens) {
+        for (i = 1; i < argc; i++) {
+            if (strncmp(argv[i], "--", 2) != 0) {
+                failed |= lex_file(argv[i]);
+            }
         }
-        failed |= dump_tokens ? lex_file(argv[i]) : parse_file(argv[i]);
+        return failed;
+    }
+
+    {
+        char **paths = calloc((size_t)files, sizeof(char *));
+        int n = 0;
+        if (paths == NULL) {
+            fprintf(stderr, "slop: out of memory\n");
+            return 1;
+        }
+        for (i = 1; i < argc; i++) {
+            /* Anything else beginning with -- was handled above. */
+            if (strncmp(argv[i], "--", 2) != 0) {
+                paths[n++] = argv[i];
+            }
+        }
+        failed = compile(paths, n, parse_only);
+        free(paths);
     }
     return failed;
 }

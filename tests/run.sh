@@ -51,7 +51,11 @@ updated=0
 for path in "$cases"/*.slop; do
     name=$(basename "$path" .slop)
 
-    args=""
+    # parse_* pins the parser alone, so it runs with --parse-only: plenty of
+    # slop parses and can never type-check (`f(x)(x)` has no function pointer
+    # to be), so these cases cannot be pushed through sema. Sema needs cases
+    # of its own, which are valid programs.
+    args="--parse-only"
     case "$name" in
     lex_*) args="--tokens" ;;
     esac

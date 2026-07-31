@@ -2,5 +2,5 @@ parse_recovery.slop:13:19: error: expected a type, found '{'
 parse_recovery.slop:17:9: error: expected identifier, found ';'
 parse_recovery.slop:22:17: error: expected an expression, found ';'
 parse_recovery.slop:27:9: error: expected a non-negative integer literal, found ','
-parse_recovery.slop: 4 error(s)
+4 error(s)
 exit: 1

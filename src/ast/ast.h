@@ -13,6 +13,11 @@ typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 typedef struct Item Item;
 
+/* Sema's resolved type. Declared as a tag, not a typedef, so ast.h stays
+ * free of sema/types.h and the dependency points one way only: the parser
+ * fills none of these, sema fills all of them. */
+struct Ty;
+
 /* The parser produces a tree, never a type: no name is resolved and no
  * constant is folded here. A child may be NULL when the parser recovered
  * from an error, so every consumer must be NULL-tolerant until the parse
@@ -55,13 +60,18 @@ typedef enum {
     EXPR_CALL,
     EXPR_INDEX,
     EXPR_FIELD,
-    EXPR_CAST,  /* e.as(T) */
-    EXPR_SIZEOF /* sizeof(T) */
+    EXPR_CAST,   /* e.as(T) */
+    EXPR_SIZEOF, /* sizeof(T) */
+
+    /* An implicit conversion sema inserted. The parser never produces one;
+     * the target type is the node's own sem_type. */
+    EXPR_CONV
 } ExprKind;
 
 struct Expr {
     ExprKind kind;
     SrcPos pos;
+    struct Ty *sem_type; /* filled by sema; NULL until then */
     union {
         uint64_t ival; /* EXPR_INT, EXPR_CHAR */
         double fval;   /* EXPR_FLOAT */
@@ -96,6 +106,9 @@ struct Expr {
         struct {
             Type *type;
         } size_of;
+        struct {
+            Expr *operand;
+        } conv;
     } u;
 };
 
