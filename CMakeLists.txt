@@ -15,6 +15,7 @@ add_executable(slop
         src/support/strview.c src/support/strview.h
         src/support/arena.c src/support/arena.h
         src/support/vec.c src/support/vec.h
+        src/support/map.c src/support/map.h
         src/support/diag.c src/support/diag.h
         src/lexer/lexer.c src/lexer/lexer.h
         src/ast/ast.c src/ast/ast.h
