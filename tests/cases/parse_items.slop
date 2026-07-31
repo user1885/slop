@@ -1,0 +1,57 @@
+# Pins every top-level item form from GRAMMAR.md section 3, including the
+# ones with optional pieces: a missing return type, an empty struct body, an
+# enum with and without an explicit underlying type, a global with and
+# without an initializer, and extern varargs.
+
+extern "c" {
+    fn puts(u8* s) -> i32;
+    fn printf(u8* fmt, ...) -> i32;
+    fn exit(i32 code) -> void;
+    fn now() -> i64;
+}
+
+struct Empty {
+}
+
+struct Point {
+    i32 x;
+    i32 y;
+}
+
+# Members number from 0 unless overridden; later implicit members continue
+# from the last explicit one.
+enum Plain {
+    A,
+    B,
+    C
+}
+
+enum Sized : u8 {
+    X = 1,
+    Y = 2,
+}
+
+enum Mixed {
+    M,
+    N = 5,
+    O
+}
+
+let u8* NAME = "slop";
+let mut i32 counter = 0;
+let mut i64[26] table;
+let b8 FLAG = true;
+let f64 RATIO = 0.5;
+let Point* HEAD = null;
+
+fn with_params(mut i32 x, u8* s, Point* p) -> i32 {
+    return x;
+}
+
+fn no_return_type() {
+    return;
+}
+
+fn no_params() -> i32 {
+    return 0;
+}

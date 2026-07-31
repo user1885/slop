@@ -1,0 +1,25 @@
+lex_errors.slop:4:1: error: unterminated string literal
+lex_errors.slop:5:1: error: unterminated character literal
+lex_errors.slop:5:4: error: unterminated literal
+lex_errors.slop:6:1: error: empty character literal
+lex_errors.slop:7:1: error: unexpected character after integer literal
+lex_errors.slop:8:1: error: expected hex digits after '0x'
+lex_errors.slop:9:1: error: expected hex digits after '0x'
+lex_errors.slop:10:1: error: integer literal does not fit in 64 bits
+lex_errors.slop:11:1: error: unknown escape sequence '\q'
+lex_errors.slop:11:15: error: unterminated string literal
+lex_errors.slop:12:1: error: \x needs exactly two hex digits
+lex_errors.slop:12:6: error: unterminated literal
+lex_errors.slop:13:3: error: unexpected character '@'
+lex_errors.slop:13:7: error: unexpected character '$'
+lex_errors.slop:14:1: error: unexpected character after float literal
+   5:3   identifier       b
+   7:5   identifier       bc
+   9:3   identifier       Z
+  11:9   identifier       escape
+  12:4   identifier       ZZ
+  13:1   identifier       x
+  13:5   identifier       y
+  15:1   end of file      
+lex_errors.slop: 23 tokens, 15 error(s)
+exit: 1

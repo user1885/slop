@@ -1,0 +1,14 @@
+# Pins the lexer's diagnostics and its recovery: every line here is broken in
+# a different way, and the scanner must report each one and keep going rather
+# than stopping at the first.
+"unterminated
+'ab'
+''
+123abc
+0x
+0xZ
+18446744073709551616
+"bad \q escape"
+'\xZZ'
+x @ y $
+1.5f

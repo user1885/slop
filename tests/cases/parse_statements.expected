@@ -1,0 +1,141 @@
+program parse_statements.slop (2 items)
+  fn stmts(i32 n, i32* p, Point s) -> i32
+    block (25)
+      let mut i32 i
+        int 0
+      let i32 fixed
+        int 1
+      let mut i32 uninit
+      empty
+      block (2)
+        let i32 inner
+          int 1
+        block (1)
+          let i32 deeper
+            int 2
+      if
+        binary >
+          name n
+          int 0
+        block (1)
+          assign =
+            name i
+            int 1
+      else
+        if
+          binary <
+            name n
+            int 0
+          block (1)
+            assign =
+              name i
+              int 2
+        else
+          block (1)
+            assign =
+              name i
+              int 3
+      if
+        binary ==
+          name n
+          int 0
+        block (1)
+          assign =
+            name i
+            int 4
+      while
+        binary <
+          name i
+          int 10
+        block (3)
+          assign +=
+            name i
+            int 1
+          if
+            binary ==
+              name i
+              int 5
+            block (1)
+              continue
+          if
+            binary ==
+              name i
+              int 7
+            block (1)
+              break
+      assign =
+        name i
+        int 0
+      assign +=
+        name i
+        int 1
+      assign -=
+        name i
+        int 1
+      assign *=
+        name i
+        int 2
+      assign /=
+        name i
+        int 2
+      assign %=
+        name i
+        int 3
+      assign &=
+        name i
+        int 1
+      assign |=
+        name i
+        int 1
+      assign ^=
+        name i
+        int 1
+      assign <<=
+        name i
+        int 1
+      assign >>=
+        name i
+        int 1
+      assign =
+        unary *
+          name p
+        int 5
+      assign =
+        field .x
+          name s
+        int 6
+      assign =
+        index
+          name p
+          int 0
+        int 7
+      expr
+        call (1 arg)
+          name call
+          name n
+      match (5 arms)
+        name n
+        arm 0
+          return
+            int 0
+        arm 1,2
+          assign *=
+            name i
+            int 2
+        arm 97
+          assign =
+            name i
+            int 1
+        arm NAMED
+          block (1)
+            assign =
+              name i
+              int 2
+        arm _
+          block (0)
+      return
+        name i
+  fn early_return() -> void
+    block (1)
+      return
+exit: 0

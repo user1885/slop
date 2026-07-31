@@ -1,0 +1,33 @@
+# Pins panic-mode recovery. The parser must report several errors in one run
+# rather than dying at the first, and it must resynchronise at item,
+# member and statement boundaries — the good items between the broken ones
+# are what prove it did.
+#
+# This case exists to freeze the *diagnostics*, so the exact messages and
+# their line:col are the assertion.
+
+fn good_before() -> i32 {
+    return 1;
+}
+
+fn broken_params( {
+}
+
+struct BrokenMember {
+    i32 ;
+    i32 ok;
+}
+
+fn broken_statement() -> i32 {
+    let i32 x = ;
+    return x;
+}
+
+enum BrokenEnum {
+    A = ,
+    B
+}
+
+fn good_after() -> i32 {
+    return 3;
+}
