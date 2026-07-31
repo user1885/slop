@@ -20,7 +20,8 @@ add_executable(slop
         src/lexer/lexer.c src/lexer/lexer.h
         src/ast/ast.c src/ast/ast.h
         src/ast/ast_dump.c src/ast/ast_dump.h
-        src/parser/parser.c src/parser/parser.h)
+        src/parser/parser.c src/parser/parser.h
+        src/sema/types.c src/sema/types.h)
 
 target_include_directories(slop PRIVATE src)
 
