@@ -7,6 +7,26 @@ it.
 
 Everything below exists to make that one limitation survivable.
 
+**Both sessions may share a single checkout.** That has been observed: one
+agent ran `git switch` in `/home/sq/projects/slop` and changed the branch
+under the other mid-task. The remote is the coordination channel, but the
+*working directory* can be shared, and git gives you no warning when it is.
+
+So: **do not `git switch` the shared checkout.** Give your area its own
+working directory instead, which is what `git worktree` is for:
+
+```bash
+git worktree add ../slop-parser -b parser/expressions main
+cd ../slop-parser        # your tree; the shared checkout is untouched
+```
+
+Two worktrees on one clone share the same branches and remotes, so claims and
+merges work exactly as described below — but neither agent can yank the other's
+files. When you are done: `git worktree remove ../slop-parser`.
+
+If you must work in the shared checkout, run `git status` first, and treat any
+branch you did not check out yourself as the other agent's territory.
+
 ---
 
 ## 1. The rule
@@ -57,10 +77,10 @@ the files in the area you claimed.
 | Area      | Files                          | Status | Depends on |
 |-----------|--------------------------------|--------|------------|
 | `lexer`   | `lexer.c`, `lexer.h`           | done   | —          |
-| `parser`  | `parser.c`, `parser.h`, `ast.h`| open   | `lexer.h`  |
-| `sema`    | `sema.c`, `sema.h`, `types.c`, `types.h` | open | `ast.h` |
+| `parser`  | `parser.c`, `parser.h`, `ast.c`, `ast.h` | done | `lexer.h` |
+| `sema`    | `sema.c`, `sema.h`, `types.c`, `types.h` | **open — next** | `ast.h` |
 | `backend` | `ir.c`, `ir.h`, `codegen_*.c`  | open   | sema       |
-| `support` | `arena.c`, `arena.h`, `diag.c`, `diag.h` | open | — |
+| `support` | `arena.c`, `arena.h`, `diag.c`, `diag.h` | arena done, `diag` open | — |
 | `driver`  | `main.c`                       | shared | everything |
 
 An area with no claim branch is free. Two agents in two different areas can
@@ -192,10 +212,26 @@ Read this before planning, so you do not re-derive it.
   Entry points: `lexer_next()` for one token, `lexer_lex_all()` for an array.
   Verified: 3127 tokens / 0 errors on `examples/demo.slop`, 16 distinct error
   diagnostics, ASan + UBSan + LSan clean.
-- **Parser, sema, backend — not started.** Next up is `parser` (GRAMMAR.md
-  sections 2–5), which needs `ast.h` designed around the common-prefix trick
-  described in section 6.
-- **No test suite yet.** Whoever needs one first should claim `support` and
-  build it; do not bolt tests onto a pass branch.
-- **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` currently
-  dumps tokens.
+- **Arena — complete.** `arena.h` / `arena.c`. Bump allocator, zeroed
+  allocations, dies on OOM. The AST lives here.
+- **Parser — complete.** `parser.h` / `parser.c` / `ast.h` / `ast.c`.
+  Recursive descent over the whole of GRAMMAR.md sections 2–5, with
+  panic-mode recovery at statement, member and item boundaries, so one run
+  reports many errors. Read the lifetime rules at the top of `parser.h`
+  before consuming the tree: identifiers point into the source buffer,
+  string literals are copied into the arena, and **a child may be NULL
+  wherever the parser recovered** — check `*out_errors` before trusting the
+  shape of anything.
+  Verified on merge: parses all of `examples/demo.slop`; the two un-C-like
+  precedence rules are right (`a & b == c` is `(a & b) == c`, `.as(T)` is
+  postfix); 17 distinct diagnostics with no hang or crash on deliberately
+  broken input; ASan + UBSan clean.
+- **Sema and backend — not started.** Sema is next: GRAMMAR.md section 7
+  passes 2–4 (global name collection, type resolution, body checking)
+  against the semantics pinned down in section 6.
+- **No test suite yet.** `examples/demo.slop` is the only regression check
+  and it only proves the front end does not crash — nothing asserts the tree
+  is *correct*. Whoever needs real tests should claim `support` and build
+  them; do not bolt tests onto a pass branch.
+- **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` dumps the
+  AST; `--tokens` stops after the lexer and dumps the token stream.
