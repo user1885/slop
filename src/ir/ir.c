@@ -533,6 +533,41 @@ static int types_equal(const IrType *a, const IrType *b) {
     }
 }
 
+/* The instruction that produced a value, or NULL when it is not one.
+ * Linear, but verification is not on any hot path. */
+static const IrInstr *defining_instr(const IrFunction *f, const IrValue *val) {
+    const IrBlock *b;
+    for (b = f->first; b != NULL; b = b->next) {
+        const IrInstr *in;
+        for (in = b->first; in != NULL; in = in->next) {
+            if (in->result == val) {
+                return in;
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Opaque pointers mean LLVM accepts a store of any type through any pointer,
+ * so a slot written wider than it was allocated is a type error nowhere and
+ * a stack buffer overflow at run time. When the destination is visibly an
+ * alloca, that is checkable, and this is the only place that will catch it. */
+static void verify_slot_store(Verifier *v, const IrInstr *store) {
+    const IrInstr *alloc = defining_instr(v->fn, store->args[1]);
+    const IrType *slot;
+
+    if (alloc == NULL || alloc->op != IR_ALLOCA) {
+        return;
+    }
+    slot = alloc->type_arg;
+    if (slot->kind == IR_TY_ARRAY || slot->kind == IR_TY_STRUCT) {
+        return; /* an aggregate slot is written through a gep or a memcpy */
+    }
+    if (ir_type_size(store->args[0]->type) > ir_type_size(slot)) {
+        problem(v, "store is wider than the slot it writes to");
+    }
+}
+
 static void verify_instr(Verifier *v, const IrInstr *in) {
     switch (in->op) {
     case IR_STORE:
@@ -540,6 +575,9 @@ static void verify_instr(Verifier *v, const IrInstr *in) {
     case IR_GEP:
         if (in->args[in->op == IR_STORE ? 1 : 0]->type->kind != IR_TY_PTR) {
             problem(v, "memory operand is not a pointer");
+        }
+        if (in->op == IR_STORE) {
+            verify_slot_store(v, in);
         }
         break;
     case IR_ADD:

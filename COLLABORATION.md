@@ -284,11 +284,24 @@ Read this before planning, so you do not re-derive it.
   `memcpy` call; a name that is not a local or a global is an enum member,
   whose value comes from the enum `Ty` because sema left the numbering there.
   The driver runs `ir_verify` before any backend sees the module.
-- **The compiler works end to end.** `slop --emit examples/demo.slop` produces
-  2016 lines of LLVM IR; `slop --backend=c` produces C that gcc compiles
-  warning-free under `-Wall -Wextra -fno-builtin` and that runs and prints
-  the right answers. `tests/run_e2e.sh` is that check, and it is the only
-  test that proves the emitted code means what the source said.
+- **The compiler works end to end, on both backends.**
+  `slop --emit examples/demo.slop` produces LLVM IR that `llvm-as` accepts,
+  `llc` turns into a native binary, `lli` runs, and `opt -O2` optimises
+  without complaint; `slop --backend=c` produces C that gcc compiles
+  warning-free under `-Wall -Wextra -fno-builtin`. Both programs print
+  identical, correct output. `tests/run_e2e.sh` runs all of it and skips the
+  LLVM half cleanly when no toolchain is installed.
+  **Run both backends, not one.** The two disagree in exactly the places a
+  bug hides: the C backend rounds every alloca up to a `uint64_t`, so it
+  quietly survived a slot being written wider than it was allocated, while
+  the native build segfaulted. That bug lived through a full review, a golden
+  test and a run of the C output, and only the LLVM path found it.
+- **`ir_verify` owns the checks LLVM cannot make.** With opaque pointers LLVM
+  accepts a store of any type through any pointer, so writing a slot wider
+  than it was allocated is a type error nowhere and a stack overflow at run
+  time. `verify_slot_store` catches it whenever the destination is visibly an
+  alloca. When lowering grows a new way to write memory, this is the check to
+  extend.
 - **Tests — golden files, two suites, both under `ctest`.**
   `tests/run.sh` covers the front end: cases in `tests/cases/`, where a case
   named `lex_*` runs with `--tokens` and pins the token stream and anything

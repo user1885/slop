@@ -65,6 +65,39 @@ else
     echo "skip    llvm-as (not installed)"
 fi
 
+# The LLVM path all the way to a native binary. This is the check that found
+# the short-circuit slot being written wider than it was allocated: the C
+# backend rounds every alloca up to a uint64_t, so it survived the overflow
+# and only the native build crashed. Two backends only cross-check each other
+# if both are actually run.
+if command -v llc > /dev/null 2>&1 && command -v cc > /dev/null 2>&1; then
+    if llc -relocation-model=pic -filetype=obj "$work/demo.ll" -o "$work/demo.o" \
+        2> "$work/llc.log" && cc -o "$work/demo_native" "$work/demo.o" 2>> "$work/llc.log"; then
+        set +e
+        "$work/demo_native" > "$work/native.txt" 2>&1
+        status=$?
+        set -e
+        if [ "$status" -ne 0 ]; then
+            echo "FAIL    native binary from LLVM IR exited $status"
+            sed 's/^/        /' "$work/native.txt"
+            failed=$((failed + 1))
+        elif diff -u "$golden/demo.out.expected" "$work/native.txt" > "$work/ndiff"; then
+            echo "ok      native binary from LLVM IR printed the expected output"
+            passed=$((passed + 1))
+        else
+            echo "FAIL    native binary from LLVM IR printed something else"
+            sed 's/^/        /' "$work/ndiff"
+            failed=$((failed + 1))
+        fi
+    else
+        echo "FAIL    llc/link of demo.ll"
+        sed 's/^/        /' "$work/llc.log"
+        failed=$((failed + 1))
+    fi
+else
+    echo "skip    llc native build (llc or cc not found)"
+fi
+
 # The C backend is the one that can be taken all the way to a running program
 # without an LLVM install.
 "$slop" --backend=c "$src" > "$work/demo.c"

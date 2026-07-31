@@ -486,7 +486,10 @@ static IrValue *lower_short_circuit(Lower *L, Expr *e) {
     int is_and = e->u.binary.op == TOK_AMP_AMP;
     IrValue *rhs;
 
-    ir_build_store(&L->b, lhs, slot);
+    /* The slot is the *expression's* type, but an operand may be an untyped
+     * bool from a comparison, which is a different width. Storing without
+     * coercing writes past the slot. */
+    ir_build_store(&L->b, coerce_to(L, lhs, rt, e->u.binary.lhs->sem_type), slot);
     if (is_and) {
         ir_build_condbr(&L->b, to_i1(L, lhs), rhs_bb, end_bb);
     } else {
@@ -495,7 +498,7 @@ static IrValue *lower_short_circuit(Lower *L, Expr *e) {
 
     ir_builder_position(&L->b, rhs_bb);
     rhs = lower_expr(L, e->u.binary.rhs);
-    ir_build_store(&L->b, rhs, slot);
+    ir_build_store(&L->b, coerce_to(L, rhs, rt, e->u.binary.rhs->sem_type), slot);
     ir_build_br(&L->b, end_bb);
 
     ir_builder_position(&L->b, end_bb);
