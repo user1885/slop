@@ -142,6 +142,32 @@ for src in "$root"/examples/*.slop; do
     fi
 done
 
+# ---- one program split across two files ---------------------------------
+# Names are collected across every file before any body is checked, so a file
+# may use a struct, a global or a function declared later and elsewhere. This
+# is the only test that exercises it.
+multi="$here/multi"
+if [ -d "$multi" ]; then
+    if "$slop" --backend=c "$multi/main.slop" "$multi/lib.slop" > "$work/multi.c" \
+        2> "$work/multi.log" && [ ! -s "$work/multi.log" ] &&
+        "$cc" -std=c99 -Wall -Wextra -fno-builtin -o "$work/multi.bin" "$work/multi.c" \
+            2>> "$work/multi.log" && [ ! -s "$work/multi.log" ]; then
+        set +e
+        "$work/multi.bin" > "$work/multi.out" 2>&1
+        set -e
+        if [ "$update" -eq 1 ]; then
+            cp "$work/multi.out" "$golden/multi.out.expected"
+            echo "updated $golden/multi.out.expected"
+        elif diff -u "$golden/multi.out.expected" "$work/multi.out" > "$work/multi.diff"; then
+            note_ok "multi-file: two files compiled together and ran"
+        else
+            note_fail "multi-file: output changed" "$work/multi.diff"
+        fi
+    else
+        note_fail "multi-file: did not build" "$work/multi.log"
+    fi
+fi
+
 if [ "$update" -eq 1 ]; then
     exit 0
 fi

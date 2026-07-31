@@ -1,0 +1,11 @@
+struct Pair { i32 a; i32 b; }
+
+let mut i32 g_shared = 7;
+
+fn add_pair(Pair* p) -> i64 {
+    return p.a.as(i64) + p.b.as(i64);
+}
+
+fn bump() -> void {
+    g_shared += 1;
+}

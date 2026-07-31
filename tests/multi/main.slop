@@ -1,0 +1,16 @@
+# Half of a two-file program. Everything it uses -- a struct, a global and a
+# function -- is declared in the *other* file, and later in it than here.
+# GRAMMAR.md section 7 makes that legal: names are collected across every
+# file before any body is checked.
+extern "c" { fn printf(u8* fmt, ...) -> i32; }
+
+fn main() -> i32 {
+    let mut Pair p;
+    p.a = 20;
+    p.b = 22;
+    printf("sum=%lld\n", add_pair(&p));
+    printf("shared=%d\n", g_shared);
+    bump();
+    printf("bumped=%d\n", g_shared);
+    return 0;
+}
