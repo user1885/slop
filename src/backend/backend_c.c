@@ -32,8 +32,25 @@
 
 typedef struct {
     FILE *out;
+    const IrModule *module;
     int problems;
 } CEmit;
+
+/* In the IR a global *is* its address; in C the name is its value, so a
+ * scalar global has to be taken the address of. Arrays and string constants
+ * already decay to a pointer, so they are used bare. */
+static int global_needs_addressof(const IrModule *m, const char *name) {
+    const IrGlobal *g;
+    if (m == NULL) {
+        return 0;
+    }
+    for (g = m->globals; g != NULL; g = g->next) {
+        if (strcmp(g->name, name) == 0) {
+            return g->str == NULL && g->type->kind != IR_TY_ARRAY && g->type->kind != IR_TY_STRUCT;
+        }
+    }
+    return 0;
+}
 
 static void unsupported(CEmit *e, const char *what) {
     e->problems++;
@@ -84,7 +101,7 @@ static const char *unsigned_type(const IrType *t) {
     }
 }
 
-static void print_value(FILE *out, const IrValue *v) {
+static void print_value_m(FILE *out, const IrModule *m, const IrValue *v) {
     switch (v->kind) {
     case IRV_CONST_INT:
         if (v->type->kind == IR_TY_INT && v->type->bits == 64) {
@@ -102,8 +119,13 @@ static void print_value(FILE *out, const IrValue *v) {
     case IRV_UNDEF:
         fputs("0", out);
         break;
-    case IRV_LOCAL:
     case IRV_GLOBAL:
+        if (global_needs_addressof(m, v->name)) {
+            fputc('&', out);
+        }
+        print_ident(out, v->name);
+        break;
+    case IRV_LOCAL:
     case IRV_FUNC:
         print_ident(out, v->name);
         break;
@@ -182,6 +204,7 @@ static const char *pred_operator(IrPred p) {
 
 static void print_instr(CEmit *e, const IrInstr *in) {
     FILE *out = e->out;
+    const IrModule *m = e->module;
     uint32_t i;
 
     fputs("    ", out);
@@ -205,7 +228,7 @@ static void print_instr(CEmit *e, const IrInstr *in) {
         }
         print_ident(out, in->result->name);
         fprintf(out, " = *(%s *)", ct);
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
     }
@@ -217,9 +240,9 @@ static void print_instr(CEmit *e, const IrInstr *in) {
             return;
         }
         fprintf(out, "*(%s *)", ct);
-        print_value(out, in->args[1]);
+        print_value_m(out, m, in->args[1]);
         fputs(" = ", out);
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
     }
@@ -227,12 +250,12 @@ static void print_instr(CEmit *e, const IrInstr *in) {
     case IR_GEP:
         print_ident(out, in->result->name);
         fputs(" = (char *)", out);
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         if (in->gep == IR_GEP_FIELD) {
             fprintf(out, " + %u;\n", field_offset(in->type_arg, (uint32_t)in->args[1]->ival));
         } else {
             fprintf(out, " + (%u * (int64_t)", ir_type_size(in->type_arg));
-            print_value(out, in->args[1]);
+            print_value_m(out, m, in->args[1]);
             fputs(");\n", out);
         }
         return;
@@ -244,12 +267,12 @@ static void print_instr(CEmit *e, const IrInstr *in) {
         if (in->op == IR_ICMP && is_unsigned_pred(in->pred)) {
             fprintf(out, "(%s)", unsigned_type(in->args[0]->type));
         }
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fprintf(out, " %s ", pred_operator(in->pred));
         if (in->op == IR_ICMP && is_unsigned_pred(in->pred)) {
             fprintf(out, "(%s)", unsigned_type(in->args[1]->type));
         }
-        print_value(out, in->args[1]);
+        print_value_m(out, m, in->args[1]);
         fputs(");\n", out);
         return;
 
@@ -261,7 +284,7 @@ static void print_instr(CEmit *e, const IrInstr *in) {
     case IR_SITOFP:
         print_ident(out, in->result->name);
         fprintf(out, " = (%s)", scalar_type(in->result->type));
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
 
@@ -273,21 +296,21 @@ static void print_instr(CEmit *e, const IrInstr *in) {
         print_ident(out, in->result->name);
         fprintf(out, " = (%s)(%s)", scalar_type(in->result->type),
                 unsigned_type(in->args[0]->type));
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
 
     case IR_PTRTOINT:
         print_ident(out, in->result->name);
         fprintf(out, " = (%s)(uintptr_t)", scalar_type(in->result->type));
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
 
     case IR_INTTOPTR:
         print_ident(out, in->result->name);
         fputs(" = (void *)(uintptr_t)", out);
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(";\n", out);
         return;
 
@@ -302,7 +325,7 @@ static void print_instr(CEmit *e, const IrInstr *in) {
             if (i != 0) {
                 fputs(", ", out);
             }
-            print_value(out, in->args[i]);
+            print_value_m(out, m, in->args[i]);
         }
         fputs(");\n", out);
         return;
@@ -312,7 +335,7 @@ static void print_instr(CEmit *e, const IrInstr *in) {
             fputs("return;\n", out);
         } else {
             fputs("return ", out);
-            print_value(out, in->args[0]);
+            print_value_m(out, m, in->args[0]);
             fputs(";\n", out);
         }
         return;
@@ -325,7 +348,7 @@ static void print_instr(CEmit *e, const IrInstr *in) {
 
     case IR_CONDBR:
         fputs("if (", out);
-        print_value(out, in->args[0]);
+        print_value_m(out, m, in->args[0]);
         fputs(") goto ", out);
         print_ident(out, in->dest->name);
         fputs("; else goto ", out);
@@ -351,14 +374,14 @@ static void print_instr(CEmit *e, const IrInstr *in) {
              * opcode, and this is where it has to be honoured. */
             fprintf(out, "(%s)((%s)", scalar_type(in->result->type),
                     unsigned_type(in->args[0]->type));
-            print_value(out, in->args[0]);
+            print_value_m(out, m, in->args[0]);
             fprintf(out, " %s (%s)", cop, unsigned_type(in->args[1]->type));
-            print_value(out, in->args[1]);
+            print_value_m(out, m, in->args[1]);
             fputs(");\n", out);
         } else {
-            print_value(out, in->args[0]);
+            print_value_m(out, m, in->args[0]);
             fprintf(out, " %s ", cop);
-            print_value(out, in->args[1]);
+            print_value_m(out, m, in->args[1]);
             fputs(";\n", out);
         }
         return;
@@ -449,9 +472,11 @@ static void print_body(CEmit *e, const IrFunction *f) {
 
     for (b = f->first; b != NULL; b = b->next) {
         const IrInstr *in;
-        /* The entry block is reached by falling in, so labelling it when
-         * nothing branches back to it only earns an unused-label warning. */
-        if (b != f->first || block_is_target(f, b)) {
+        /* A label nothing branches to is an unused-label warning. Dropping it
+         * is safe because every block ends in a terminator: entry is reached
+         * by falling in, and an untargeted block after a terminator was
+         * unreachable anyway. */
+        if (block_is_target(f, b)) {
             print_ident(out, b->name);
             fputs(":;\n", out);
         }
@@ -477,6 +502,7 @@ static int c_emit(const IrModule *m, FILE *out) {
     uint32_t i;
 
     e.out = out;
+    e.module = m;
     e.problems = 0;
 
     fprintf(out, "/* generated from %s by the slop C backend */\n", m->name);
@@ -540,7 +566,7 @@ static int c_emit(const IrModule *m, FILE *out) {
         }
         if (!g->is_external && g->init != NULL && scalar_type(g->type) != NULL) {
             fputs(" = ", out);
-            print_value(out, g->init);
+            print_value_m(out, m, g->init);
         }
         fputs(";\n", out);
     }

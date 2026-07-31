@@ -2,6 +2,7 @@
  * `--tokens` stops after the lexer and dumps the token stream instead. */
 #include "ast/ast_dump.h"
 #include "backend/backend.h"
+#include "backend/lowering.h"
 #include "driver/source_file.h"
 #include "driver/token_dump.h"
 #include "lexer/lexer.h"
@@ -58,7 +59,7 @@ static void unit_free(Unit *u) {
 
 /* Every file goes through together: declaration order does not matter in
  * slop, so sema cannot check one body until it has seen every top level. */
-static int compile(char **paths, int npaths, int parse_only) {
+static int compile(char **paths, int npaths, int parse_only, const Backend *backend) {
     Arena *arena = arena_new(0);
     Unit *units = calloc((size_t)npaths, sizeof(Unit));
     Program **progs = calloc((size_t)npaths, sizeof(Program *));
@@ -106,7 +107,20 @@ static int compile(char **paths, int npaths, int parse_only) {
         }
     } else if (errors == 0) {
         errors = sema_check(arena, progs, (size_t)nunits);
-        if (errors == 0) {
+        if (errors == 0 && backend != NULL) {
+            /* Pass 5: one module for every file, then whichever backend was
+             * asked for. The module is verified first, because a backend is
+             * entitled to assume a well-formed one. */
+            IrModule *m = lower_programs(arena, progs, (size_t)nunits);
+            if (m == NULL) {
+                errors++;
+            } else if (ir_verify(m, stderr) != 0) {
+                fprintf(stderr, "slop: internal error: lowering produced an invalid module\n");
+                errors++;
+            } else if (backend->emit(m, stdout) != 0) {
+                errors++;
+            }
+        } else if (errors == 0) {
             for (i = 0; i < nunits; i++) {
                 ast_dump(stdout, progs[i], sema_print_type);
             }
@@ -128,6 +142,7 @@ static int compile(char **paths, int npaths, int parse_only) {
 int main(int argc, char **argv) {
     int dump_tokens = 0;
     int parse_only = 0;
+    const Backend *backend = NULL;
     int files = 0;
     int failed = 0;
     int i;
@@ -137,6 +152,15 @@ int main(int argc, char **argv) {
             dump_tokens = 1;
         } else if (strcmp(argv[i], "--parse-only") == 0) {
             parse_only = 1;
+        } else if (strncmp(argv[i], "--backend=", 10) == 0) {
+            backend = backend_find(argv[i] + 10);
+            if (backend == NULL) {
+                fprintf(stderr, "slop: no backend named '%s'. Available:\n", argv[i] + 10);
+                backend_list(stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--emit") == 0) {
+            backend = backend_default();
         } else if (strcmp(argv[i], "--list-backends") == 0) {
             backend_list(stdout);
             return 0;
@@ -145,12 +169,9 @@ int main(int argc, char **argv) {
         }
     }
     if (files == 0) {
-        fprintf(stderr, "usage: slop [--tokens | --parse-only] <file.slop>...\n");
+        fprintf(stderr, "usage: slop [--tokens | --parse-only | --emit | --backend=NAME]"
+                        " <file.slop>...\n");
         fprintf(stderr, "       slop --list-backends\n");
-        /* --backend=<name> arrives with lowering: choosing a backend is only
-         * meaningful once there is an IrModule to hand it, and building one
-         * needs sema's resolved types. The backends themselves are done and
-         * exercised by tests/run_ir.sh. */
         return 2;
     }
 
@@ -176,7 +197,7 @@ int main(int argc, char **argv) {
                 paths[n++] = argv[i];
             }
         }
-        failed = compile(paths, n, parse_only);
+        failed = compile(paths, n, parse_only, backend);
         free(paths);
     }
     return failed;
