@@ -1,16 +1,14 @@
-#include "parser.h"
+#include "parser/parser.h"
 
-#include <stdarg.h>
+#include "support/diag.h"
+#include "support/vec.h"
+
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-/* Stop printing after this many errors; the count stays exact. */
-#define MAX_REPORTED_ERRORS 20
 
 /* Recursion limit for nested expressions and statements. Hitting it is a
  * diagnostic, not a crash -- the parser recurses on the C stack. */
-#define MAX_NESTING         200
+#define MAX_NESTING 200
 
 typedef struct {
     Arena *arena;
@@ -18,8 +16,7 @@ typedef struct {
     size_t ntoks;
     size_t pos;
     const char *file;
-    int errors;
-    int reported;
+    Diag diag;
     int depth;
 } Parser;
 
@@ -45,65 +42,7 @@ static int is_assign_op(TokenKind kind) {
     }
 }
 
-/* ------------------------------------------------------- scratch vectors */
-
-/* Node lists are collected here and copied into the arena once the final
- * length is known, so the arena never holds a half-grown buffer. */
-typedef struct {
-    char *data;
-    uint32_t len;
-    uint32_t cap;
-    size_t elem;
-} Vec;
-
-static void vec_init(Vec *v, size_t elem) {
-    v->data = NULL;
-    v->len = 0;
-    v->cap = 0;
-    v->elem = elem;
-}
-
-static void *vec_push(Vec *v) {
-    void *slot;
-    if (v->len == v->cap) {
-        uint32_t cap = v->cap != 0 ? v->cap * 2 : 8;
-        char *data = realloc(v->data, (size_t)cap * v->elem);
-        if (data == NULL) {
-            fprintf(stderr, "slop: out of memory\n");
-            exit(1);
-        }
-        v->data = data;
-        v->cap = cap;
-    }
-    slot = v->data + (size_t)v->len * v->elem;
-    memset(slot, 0, v->elem);
-    v->len++;
-    return slot;
-}
-
-static void vec_push_ptr(Vec *v, void *item) {
-    *(void **)vec_push(v) = item;
-}
-
-static void *vec_take(Arena *a, Vec *v, uint32_t *out_len) {
-    void *out = NULL;
-    *out_len = v->len;
-    if (v->len != 0) {
-        out = arena_dup(a, v->data, (size_t)v->len * v->elem);
-    }
-    free(v->data);
-    vec_init(v, v->elem);
-    return out;
-}
-
-static void vec_drop(Vec *v) {
-    free(v->data);
-    vec_init(v, v->elem);
-}
-
 /* ---------------------------------------------------------- token access */
-
-static void error_at(Parser *p, SrcPos pos, const char *fmt, ...);
 
 static TokenKind cur(Parser *p) {
     return p->toks[p->pos].kind;
@@ -144,7 +83,7 @@ static int at(Parser *p, TokenKind kind) {
  * interleaved in source order; the lexer itself never prints. */
 static void skip_error_tokens(Parser *p) {
     while (p->toks[p->pos].kind == TOK_ERROR && p->pos + 1 < p->ntoks) {
-        error_at(p, here(p), "%s", p->toks[p->pos].val.err);
+        diag_error(&p->diag, here(p), "%s", p->toks[p->pos].val.err);
         p->pos++;
     }
 }
@@ -168,26 +107,6 @@ static int accept(Parser *p, TokenKind kind) {
 }
 
 /* ------------------------------------------------------------ diagnostics */
-
-static void error_at(Parser *p, SrcPos pos, const char *fmt, ...) {
-    va_list ap;
-
-    p->errors++;
-    if (p->reported >= MAX_REPORTED_ERRORS) {
-        if (p->reported == MAX_REPORTED_ERRORS) {
-            p->reported++;
-            fprintf(stderr, "%s: too many errors; further diagnostics suppressed\n", p->file);
-        }
-        return;
-    }
-    p->reported++;
-
-    fprintf(stderr, "%s:%d:%d: error: ", pos.file != NULL ? pos.file : p->file, pos.line, pos.col);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-}
 
 /* token_kind_name() gives keywords and punctuation their spelling and the
  * rest a prose name, so only the former wants quotes around it. */
@@ -217,7 +136,7 @@ static void describe_current(Parser *p, char *buf, size_t n) {
 static void error_unexpected(Parser *p, const char *expected) {
     char found[80];
     describe_current(p, found, sizeof(found));
-    error_at(p, here(p), "expected %s, found %s", expected, found);
+    diag_error(&p->diag, here(p), "expected %s, found %s", expected, found);
 }
 
 static int expect(Parser *p, TokenKind kind) {
@@ -597,7 +516,7 @@ static Expr *parse_expr(Parser *p) {
     Expr *e;
 
     if (p->depth >= MAX_NESTING) {
-        error_at(p, here(p), "expression nests too deeply");
+        diag_error(&p->diag, here(p), "expression nests too deeply");
         return NULL;
     }
     p->depth++;
@@ -835,7 +754,7 @@ static Stmt *parse_stmt(Parser *p) {
     Stmt *s;
 
     if (p->depth >= MAX_NESTING) {
-        error_at(p, here(p), "statement nests too deeply");
+        diag_error(&p->diag, here(p), "statement nests too deeply");
         return NULL;
     }
     p->depth++;
@@ -915,7 +834,7 @@ static int parse_fn_decl(Parser *p, FnDecl *out, int is_extern) {
                 if (is_extern) {
                     out->is_variadic = 1;
                 } else {
-                    error_at(p, pos, "'...' is only allowed in an extern declaration");
+                    diag_error(&p->diag, pos, "'...' is only allowed in an extern declaration");
                 }
                 break;
             }
@@ -1160,6 +1079,7 @@ Program *parse_program(Arena *arena, const Token *tokens, size_t count, const ch
     p.toks = tokens;
     p.ntoks = count;
     p.file = file;
+    diag_init(&p.diag, file);
     skip_error_tokens(&p);
 
     vec_init(&items, sizeof(Item *));
@@ -1178,7 +1098,7 @@ Program *parse_program(Arena *arena, const Token *tokens, size_t count, const ch
     prog->items = vec_take(arena, &items, &prog->nitems);
 
     if (out_errors != NULL) {
-        *out_errors = p.errors;
+        *out_errors = diag_error_count(&p.diag);
     }
     return prog;
 }

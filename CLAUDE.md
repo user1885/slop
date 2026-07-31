@@ -18,8 +18,12 @@ short and it is not optional:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
-./build/slop examples/demo.slop        # dumps tokens; exercises all of v0
+./build/slop examples/demo.slop        # dumps the AST; exercises all of v0
+./build/slop --tokens examples/demo.slop
 ```
+
+Sources live in `src/<area>/`, one directory per compiler pass, and includes
+are spelled from `src/` down (`#include "lexer/lexer.h"`).
 
 C99, no extensions — this compiler has to be written in slop eventually, so
 keep the C boring. Warnings are on (`-Wall -Wextra`) and must stay silent.

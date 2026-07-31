@@ -71,24 +71,31 @@ The area prefix is what makes a claim legible to the other agent at a glance.
 
 ## 3. Areas and who owns which files
 
-Ownership is by **compiler pass**, following GRAMMAR.md section 7. Touch only
-the files in the area you claimed.
+Ownership is by **compiler pass**, following GRAMMAR.md section 7, and each
+area is a directory under `src/`. Touch only the files in the area you
+claimed.
 
-| Area      | Files                          | Status | Depends on |
-|-----------|--------------------------------|--------|------------|
-| `lexer`   | `lexer.c`, `lexer.h`           | done   | —          |
-| `parser`  | `parser.c`, `parser.h`, `ast.c`, `ast.h` | done | `lexer.h` |
-| `sema`    | `sema.c`, `sema.h`, `types.c`, `types.h` | **open — next** | `ast.h` |
-| `backend` | `ir.c`, `ir.h`, `codegen_*.c`  | open   | sema       |
-| `support` | `arena.c`, `arena.h`, `diag.c`, `diag.h` | arena done, `diag` open | — |
-| `driver`  | `main.c`                       | shared | everything |
+| Area      | Directory      | Files                                    | Status | Depends on |
+|-----------|----------------|------------------------------------------|--------|------------|
+| `lexer`   | `src/lexer/`   | `lexer.c`, `lexer.h`                     | done   | —          |
+| `parser`  | `src/parser/`  | `parser.c`, `parser.h`                   | done   | `lexer.h`  |
+|           | `src/ast/`     | `ast.c`, `ast.h`, `ast_dump.c/.h`        | done   |            |
+| `sema`    | `src/sema/`    | `sema.c`, `sema.h`, `types.c`, `types.h` | **open — next** | `ast.h` |
+| `backend` | `src/backend/` | `ir.c`, `ir.h`, `codegen_*.c`            | open   | sema       |
+| `support` | `src/support/` | `arena`, `vec`, `diag`, `strview`, `srcpos` | in place, area open | — |
+| `driver`  | `src/driver/`  | `main.c`, `source_file.c/.h`, `token_dump.c/.h` | shared | everything |
 
 An area with no claim branch is free. Two agents in two different areas can
 work in parallel indefinitely and never conflict — that is the point of the
-split.
+split. One directory per area is what makes that visible: if a diff touches
+two directories, it touches two areas.
+
+Includes are spelled from `src/` down (`#include "lexer/lexer.h"`), so the
+area a header belongs to is legible at every use site.
 
 `driver` is shared on purpose: whoever finishes a pass wires it into `main.c`
-as part of that pass's branch. Keep `main.c` thin so those edits stay small.
+as part of that pass's branch. Keep `main.c` thin so those edits stay small —
+anything bigger than wiring goes in its own file next to it.
 
 ---
 
@@ -212,12 +219,19 @@ Read this before planning, so you do not re-derive it.
   Entry points: `lexer_next()` for one token, `lexer_lex_all()` for an array.
   Verified: 3127 tokens / 0 errors on `examples/demo.slop`, 16 distinct error
   diagnostics, ASan + UBSan + LSan clean.
-- **Arena — complete.** `arena.h` / `arena.c`. Bump allocator, zeroed
-  allocations, dies on OOM. The AST lives here.
-- **Parser — complete.** `parser.h` / `parser.c` / `ast.h` / `ast.c`.
+- **Support — arena, vec, diag, strview.** `src/support/`. The arena is a
+  bump allocator with zeroed allocations that dies on OOM, and the AST lives
+  in it. `vec` is the malloc-backed scratch array node lists are built in
+  before being handed to the arena; `diag` owns the error counter, the
+  report cap and the `file:line:col: error:` format; `strview`/`srcpos` are
+  the two value types the AST and diagnostics share.
+- **Parser — complete.** `src/parser/`, tree in `src/ast/` (`ast.c` is the
+  node constructors, `ast_dump.c` the debug printer).
   Recursive descent over the whole of GRAMMAR.md sections 2–5, with
   panic-mode recovery at statement, member and item boundaries, so one run
-  reports many errors. Read the lifetime rules at the top of `parser.h`
+  reports many errors, and `TOK_ERROR` is reported where it sits in the
+  stream, so lexical and syntactic diagnostics stay in source order.
+  Read the lifetime rules at the top of `parser.h`
   before consuming the tree: identifiers point into the source buffer,
   string literals are copied into the arena, and **a child may be NULL
   wherever the parser recovered** — check `*out_errors` before trusting the
@@ -228,10 +242,14 @@ Read this before planning, so you do not re-derive it.
   broken input; ASan + UBSan clean.
 - **Sema and backend — not started.** Sema is next: GRAMMAR.md section 7
   passes 2–4 (global name collection, type resolution, body checking)
-  against the semantics pinned down in section 6.
+  against the semantics pinned down in section 6. It consumes `ast/ast.h`,
+  where enum member values are left unnumbered and global initializers left
+  as literals, because numbering and constant evaluation are its job.
 - **No test suite yet.** `examples/demo.slop` is the only regression check
   and it only proves the front end does not crash — nothing asserts the tree
   is *correct*. Whoever needs real tests should claim `support` and build
   them; do not bolt tests onto a pass branch.
+- **Layout:** sources live in `src/<area>/`, one directory per pass, and
+  includes are spelled from `src/` down (`#include "lexer/lexer.h"`).
 - **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` dumps the
   AST; `--tokens` stops after the lexer and dumps the token stream.
