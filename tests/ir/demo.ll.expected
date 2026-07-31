@@ -1,0 +1,78 @@
+; ModuleID = 'demo.slop'
+source_filename = "demo.slop"
+
+%Point = type { i32, i32 }
+
+@counter = global i32 0, align 4
+@.str.0 = private unnamed_addr constant [6 x i8] c"slop\0A\00", align 1
+
+declare i32 @printf(ptr, ...)
+
+define i32 @sum_to(i32 %n) {
+entry:
+  %total = alloca i32, align 4
+  %i = alloca i32, align 4
+  store i32 0, ptr %total, align 4
+  store i32 0, ptr %i, align 4
+  br label %cond
+cond:
+  %t2 = load i32, ptr %i, align 4
+  %t3 = icmp slt i32 %t2, %n
+  br i1 %t3, label %body, label %done
+body:
+  %t4 = load i32, ptr %total, align 4
+  %t5 = load i32, ptr %i, align 4
+  %t6 = add i32 %t4, %t5
+  store i32 %t6, ptr %total, align 4
+  %t7 = add i32 %t5, 1
+  store i32 %t7, ptr %i, align 4
+  br label %cond
+done:
+  %t8 = load i32, ptr %total, align 4
+  ret i32 %t8
+}
+
+define i32 @point_x(ptr %p) {
+entry:
+  %t0 = getelementptr inbounds %Point, ptr %p, i32 0, i32 0
+  %t1 = load i32, ptr %t0, align 4
+  ret i32 %t1
+}
+
+define i32 @elem(ptr %arg0, i64 %arg1) {
+entry:
+  %t0 = getelementptr inbounds i32, ptr %arg0, i64 %arg1
+  %t1 = load i32, ptr %t0, align 4
+  ret i32 %t1
+}
+
+define i64 @widen(i8 %arg0) {
+entry:
+  %t0 = sext i8 %arg0 to i64
+  ret i64 %t0
+}
+
+define i32 @main() {
+entry:
+  %t0 = call i32 (ptr, ...) @printf(ptr @.str.0)
+  %p = alloca %Point, align 4
+  %t2 = getelementptr inbounds %Point, ptr %p, i32 0, i32 0
+  store i32 3, ptr %t2, align 4
+  %t3 = getelementptr inbounds %Point, ptr %p, i32 0, i32 1
+  store i32 4, ptr %t3, align 4
+  %a = alloca [4 x i32], align 4
+  %t5 = getelementptr inbounds i32, ptr %a, i64 2
+  store i32 5, ptr %t5, align 4
+  %c = alloca i8, align 1
+  store i8 -1, ptr %c, align 1
+  %t7 = call i32 @sum_to(i32 10)
+  %t8 = call i32 @point_x(ptr %p)
+  %t9 = call i32 @elem(ptr %a, i64 2)
+  %t10 = load i8, ptr %c, align 1
+  %t11 = call i64 @widen(i8 %t10)
+  %t12 = trunc i64 %t11 to i32
+  %t13 = sub i32 %t7, %t8
+  %t14 = sub i32 %t13, %t9
+  %t15 = add i32 %t14, %t12
+  ret i32 %t15
+}

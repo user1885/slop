@@ -1,0 +1,115 @@
+/* generated from demo.slop by the slop C backend */
+#include <stdint.h>
+#include <stddef.h>
+
+struct Point { int32_t f0; int32_t f1; };
+
+int32_t counter = 0;
+static char _str_0[] = "slop\x0A";
+
+int32_t printf(void * arg0, ...);
+int32_t sum_to(int32_t n);
+int32_t point_x(void * p);
+int32_t elem(void * arg0, int64_t arg1);
+int64_t widen(int8_t arg0);
+int32_t main(void);
+
+int32_t sum_to(int32_t n) {
+    uint64_t storage_total[1];
+    void * total;
+    uint64_t storage_i[1];
+    void * i;
+    int32_t t2;
+    _Bool t3;
+    int32_t t4;
+    int32_t t5;
+    int32_t t6;
+    int32_t t7;
+    int32_t t8;
+    total = &storage_total;
+    i = &storage_i;
+    *(int32_t *)total = 0;
+    *(int32_t *)i = 0;
+    goto cond;
+cond:;
+    t2 = *(int32_t *)i;
+    t3 = (t2 < n);
+    if (t3) goto body; else goto done;
+body:;
+    t4 = *(int32_t *)total;
+    t5 = *(int32_t *)i;
+    t6 = t4 + t5;
+    *(int32_t *)total = t6;
+    t7 = t5 + 1;
+    *(int32_t *)i = t7;
+    goto cond;
+done:;
+    t8 = *(int32_t *)total;
+    return t8;
+}
+
+int32_t point_x(void * p) {
+    void * t0;
+    int32_t t1;
+    t0 = (char *)p + 0;
+    t1 = *(int32_t *)t0;
+    return t1;
+}
+
+int32_t elem(void * arg0, int64_t arg1) {
+    void * t0;
+    int32_t t1;
+    t0 = (char *)arg0 + (4 * (int64_t)arg1);
+    t1 = *(int32_t *)t0;
+    return t1;
+}
+
+int64_t widen(int8_t arg0) {
+    int64_t t0;
+    t0 = (int64_t)arg0;
+    return t0;
+}
+
+int32_t main(void) {
+    int32_t t0;
+    uint64_t storage_p[1];
+    void * p;
+    void * t2;
+    void * t3;
+    uint64_t storage_a[2];
+    void * a;
+    void * t5;
+    uint64_t storage_c[1];
+    void * c;
+    int32_t t7;
+    int32_t t8;
+    int32_t t9;
+    int8_t t10;
+    int64_t t11;
+    int32_t t12;
+    int32_t t13;
+    int32_t t14;
+    int32_t t15;
+    t0 = printf(_str_0);
+    (void)t0;
+    p = &storage_p;
+    t2 = (char *)p + 0;
+    *(int32_t *)t2 = 3;
+    t3 = (char *)p + 4;
+    *(int32_t *)t3 = 4;
+    a = &storage_a;
+    t5 = (char *)a + (4 * (int64_t)INT64_C(2));
+    *(int32_t *)t5 = 5;
+    c = &storage_c;
+    *(int8_t *)c = -1;
+    t7 = sum_to(10);
+    t8 = point_x(p);
+    t9 = elem(a, INT64_C(2));
+    t10 = *(int8_t *)c;
+    t11 = widen(t10);
+    t12 = (int32_t)t11;
+    t13 = t7 - t8;
+    t14 = t13 - t9;
+    t15 = t14 + t12;
+    return t15;
+}

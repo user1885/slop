@@ -19,10 +19,39 @@ add_executable(slop
         src/lexer/lexer.c src/lexer/lexer.h
         src/ast/ast.c src/ast/ast.h
         src/ast/ast_dump.c src/ast/ast_dump.h
-        src/parser/parser.c src/parser/parser.h)
+        src/parser/parser.c src/parser/parser.h
+        src/ir/ir.c src/ir/ir.h
+        src/backend/backend.c src/backend/backend.h
+        src/backend/backend_llvm.c
+        src/backend/backend_c.c)
 
 target_include_directories(slop PRIVATE src)
 
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(slop PRIVATE -Wall -Wextra)
 endif ()
+
+# Builds an IR module by hand and emits it through a chosen backend. Until
+# lowering exists this is the only exercise the IR and the backends get, so
+# it is a test binary, not a sample.
+add_executable(slop-ir-demo
+        tests/ir_demo.c
+        src/ir/ir.c
+        src/backend/backend.c
+        src/backend/backend_llvm.c
+        src/backend/backend_c.c
+        src/support/arena.c)
+
+target_include_directories(slop-ir-demo PRIVATE src)
+
+if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(slop-ir-demo PRIVATE -Wall -Wextra)
+endif ()
+
+enable_testing()
+
+# Golden output for each backend, plus the check that matters most: the C
+# backend's output is compiled and run, and must exit with the value the
+# module computes.
+add_test(NAME ir-backends
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_ir.sh $<TARGET_FILE:slop-ir-demo>)
