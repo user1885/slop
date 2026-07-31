@@ -57,7 +57,7 @@ static int parse_file(const char *path) {
     Program *prog = parse_program(arena, tokens, count, path, &errors);
 
     if (errors == 0) {
-        ast_dump(stdout, prog);
+        ast_dump(stdout, prog, NULL);
     } else {
         fprintf(stderr, "%s: %d error(s)\n", path, errors);
     }

@@ -82,6 +82,19 @@ static void dump_expr(FILE *out, const Expr *e, int depth);
 static void dump_stmt(FILE *out, const Stmt *s, int depth);
 static void dump_block(FILE *out, const Block *b, int depth);
 
+/* The type an expression got from sema, printed after its header line.
+ * Set once by ast_dump(); a dumper is called from one place at a time and
+ * threading it through every recursive call would be noise. */
+static AstTypePrinter type_printer;
+
+static void endline(FILE *out, const Expr *e) {
+    if (type_printer != NULL && e->sem_type != NULL) {
+        fputs(" : ", out);
+        type_printer(out, e->sem_type);
+    }
+    fputc('\n', out);
+}
+
 static void dump_expr(FILE *out, const Expr *e, int depth) {
     uint32_t i;
 
@@ -93,67 +106,81 @@ static void dump_expr(FILE *out, const Expr *e, int depth) {
 
     switch (e->kind) {
     case EXPR_INT:
-        fprintf(out, "int %llu\n", (unsigned long long)e->u.ival);
+        fprintf(out, "int %llu", (unsigned long long)e->u.ival);
+        endline(out, e);
         break;
     case EXPR_FLOAT:
-        fprintf(out, "float %g\n", e->u.fval);
+        fprintf(out, "float %g", e->u.fval);
+        endline(out, e);
         break;
     case EXPR_CHAR:
-        fprintf(out, "char %llu\n", (unsigned long long)e->u.ival);
+        fprintf(out, "char %llu", (unsigned long long)e->u.ival);
+        endline(out, e);
         break;
     case EXPR_STRING:
         fputs("string ", out);
         print_quoted(out, e->u.sval);
-        fputc('\n', out);
+        endline(out, e);
         break;
     case EXPR_BOOL:
-        fprintf(out, "bool %s\n", e->u.bval ? "true" : "false");
+        fprintf(out, "bool %s", e->u.bval ? "true" : "false");
+        endline(out, e);
         break;
     case EXPR_NULL:
-        fputs("null\n", out);
+        fputs("null", out);
+        endline(out, e);
         break;
     case EXPR_NAME:
         fputs("name ", out);
         print_view(out, e->u.sval);
-        fputc('\n', out);
+        endline(out, e);
         break;
     case EXPR_UNARY:
-        fprintf(out, "unary %s\n", op_str(e->u.unary.op));
+        fprintf(out, "unary %s", op_str(e->u.unary.op));
+        endline(out, e);
         dump_expr(out, e->u.unary.operand, depth + 1);
         break;
     case EXPR_BINARY:
-        fprintf(out, "binary %s\n", op_str(e->u.binary.op));
+        fprintf(out, "binary %s", op_str(e->u.binary.op));
+        endline(out, e);
         dump_expr(out, e->u.binary.lhs, depth + 1);
         dump_expr(out, e->u.binary.rhs, depth + 1);
         break;
     case EXPR_CALL:
-        fprintf(out, "call (%u arg%s)\n", e->u.call.nargs, e->u.call.nargs == 1 ? "" : "s");
+        fprintf(out, "call (%u arg%s)", e->u.call.nargs, e->u.call.nargs == 1 ? "" : "s");
+        endline(out, e);
         dump_expr(out, e->u.call.callee, depth + 1);
         for (i = 0; i < e->u.call.nargs; i++) {
             dump_expr(out, e->u.call.args[i], depth + 1);
         }
         break;
     case EXPR_INDEX:
-        fputs("index\n", out);
+        fputs("index", out);
+        endline(out, e);
         dump_expr(out, e->u.index.base, depth + 1);
         dump_expr(out, e->u.index.index, depth + 1);
         break;
     case EXPR_FIELD:
         fputs("field .", out);
         print_view(out, e->u.field.name);
-        fputc('\n', out);
+        endline(out, e);
         dump_expr(out, e->u.field.base, depth + 1);
         break;
     case EXPR_CAST:
         fputs("cast to ", out);
         ast_print_type(out, e->u.cast.type);
-        fputc('\n', out);
+        endline(out, e);
         dump_expr(out, e->u.cast.operand, depth + 1);
         break;
     case EXPR_SIZEOF:
         fputs("sizeof ", out);
         ast_print_type(out, e->u.size_of.type);
-        fputc('\n', out);
+        endline(out, e);
+        break;
+    case EXPR_CONV:
+        fputs("conv", out);
+        endline(out, e);
+        dump_expr(out, e->u.conv.operand, depth + 1);
         break;
     }
 }
@@ -363,8 +390,10 @@ static void dump_item(FILE *out, const Item *it, int depth) {
     }
 }
 
-void ast_dump(FILE *out, const Program *prog) {
+void ast_dump(FILE *out, const Program *prog, AstTypePrinter print_type) {
     uint32_t i;
+
+    type_printer = print_type;
 
     if (prog == NULL) {
         fputs("<no program>\n", out);

@@ -12,5 +12,6 @@ typedef struct {
 } StrView;
 
 int strview_eq(StrView v, const char *cstr);
+int strview_eq_view(StrView a, StrView b);
 
 #endif /* SLOP_SUPPORT_STRVIEW_H */
