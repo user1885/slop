@@ -61,14 +61,13 @@ enable_testing()
 add_test(NAME front-end
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run.sh $<TARGET_FILE:slop>)
 
-# Golden output for each backend, plus the check that matters most: the C
-# backend's output is compiled and run, and must exit with the value the
-# module computes.
 # The whole pipeline over examples/demo.slop: lower it, emit C, compile the C
 # and run it. Nothing else checks that the emitted code means what the source
 # said.
 add_test(NAME end-to-end
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.sh $<TARGET_FILE:slop>)
 
+# Golden output for each backend from the hand-built module, plus the same
+# compile-and-run check at the level of the IR alone.
 add_test(NAME ir-backends
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_ir.sh $<TARGET_FILE:slop-ir-demo>)
