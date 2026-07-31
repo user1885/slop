@@ -27,7 +27,8 @@ add_executable(slop
         src/ir/ir.c src/ir/ir.h
         src/backend/backend.c src/backend/backend.h
         src/backend/backend_llvm.c
-        src/backend/backend_c.c)
+        src/backend/backend_c.c
+        src/backend/lowering.c src/backend/lowering.h)
 
 target_include_directories(slop PRIVATE src)
 
@@ -63,5 +64,11 @@ add_test(NAME front-end
 # Golden output for each backend, plus the check that matters most: the C
 # backend's output is compiled and run, and must exit with the value the
 # module computes.
+# The whole pipeline over examples/demo.slop: lower it, emit C, compile the C
+# and run it. Nothing else checks that the emitted code means what the source
+# said.
+add_test(NAME end-to-end
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_e2e.sh $<TARGET_FILE:slop>)
+
 add_test(NAME ir-backends
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_ir.sh $<TARGET_FILE:slop-ir-demo>)

@@ -268,10 +268,27 @@ Read this before planning, so you do not re-derive it.
   declarations and statements is about as far apart as two textual targets
   get, and it also bootstraps slop anywhere a C compiler exists. Compile its
   output with `-fno-builtin` (see the comment in `backend_c.c`).
-- **Lowering AST → IR is the open piece**, and it is what `--backend=<name>`
-  waits on: choosing a backend only means something once there is a module to
-  hand it, and building one needs sema's resolved types. It belongs to
-  whoever finishes sema, or to a `backend/lowering` claim once sema lands.
+- **Lowering — complete.** `src/backend/lowering.c`, pass 5. Runs only after
+  `sema_check` returns 0. Every expression's `sem_type` supplies the
+  signedness of an operation, the width of a conversion and the element type
+  of an index. **Declarations carry no resolved type** — sema annotates only
+  `Expr` — so parameter, field and global types are converted from the syntax
+  instead; the two agree because struct layout is a guarantee in GRAMMAR.md
+  section 6, not an implementation detail. If sema ever annotates
+  declarations, this is the duplication to delete.
+  Things worth knowing before changing it: `&&`/`||` short-circuit through a
+  slot rather than a phi; a comparison is `i1` in the IR but `bN` in slop, so
+  it is zero-extended coming out and compared against zero going in; an
+  untyped literal adopts its context width at every point the IR pairs two
+  values; aggregates are handled by address throughout, and copying one is a
+  `memcpy` call; a name that is not a local or a global is an enum member,
+  whose value comes from the enum `Ty` because sema left the numbering there.
+  The driver runs `ir_verify` before any backend sees the module.
+- **The compiler works end to end.** `slop --emit examples/demo.slop` produces
+  2016 lines of LLVM IR; `slop --backend=c` produces C that gcc compiles
+  warning-free under `-Wall -Wextra -fno-builtin` and that runs and prints
+  the right answers. `tests/run_e2e.sh` is that check, and it is the only
+  test that proves the emitted code means what the source said.
 - **Tests — golden files, two suites, both under `ctest`.**
   `tests/run.sh` covers the front end: cases in `tests/cases/`, where a case
   named `lex_*` runs with `--tokens` and pins the token stream and anything

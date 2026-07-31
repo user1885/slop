@@ -1,0 +1,10 @@
+slop demo 0.1
+  a = 6                    = 6  (1 digits)
+  b = a * 7 - 4 % 3        = 41  (2 digits)
+  c = (a + b) * 2 < 100    = 1  (1 digits)
+  1 / 0                    eval error
+  d = ~a & 0xFF | 1        = 249  (3 digits)
+total=297 avg=74.250000 narrowed=74.250000 checksum=296
+average is in range
+hash("slop") = 0x74954DBD, popcount = 16
+rgb = 0x112233
