@@ -59,6 +59,10 @@ typedef enum {
 
 typedef struct Ty Ty;
 
+/* The AST item a struct was declared by, so layout can find its fields.
+ * A tag, not an include: types.h stays independent of the AST. */
+struct Item;
+
 typedef struct {
     StrView name;
     Ty *type;
@@ -90,6 +94,7 @@ struct Ty {
     FieldSym *fields; /* TY_STRUCT */
     uint32_t nfields;
     LayoutState state;
+    struct Item *decl; /* TY_STRUCT: where the fields are */
 
     EnumSym *members; /* TY_ENUM */
     uint32_t nmembers;

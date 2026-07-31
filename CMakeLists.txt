@@ -21,7 +21,9 @@ add_executable(slop
         src/ast/ast.c src/ast/ast.h
         src/ast/ast_dump.c src/ast/ast_dump.h
         src/parser/parser.c src/parser/parser.h
-        src/sema/types.c src/sema/types.h)
+        src/sema/types.c src/sema/types.h
+        src/sema/scope.c src/sema/scope.h
+        src/sema/sema.c src/sema/sema.h)
 
 target_include_directories(slop PRIVATE src)
 

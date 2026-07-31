@@ -443,9 +443,13 @@ EXPR_CONV      /* u.conv.operand, target type in sem_type. Never parsed. */
 ```
 
 Every implicit conversion the rules above allow becomes an `EXPR_CONV` in the
-tree, so the backend never has to re-derive one. An `.as(T)` that survives
-becomes an `EXPR_CONV` too, which leaves the backend with exactly one node
-kind to lower.
+tree, so the backend never has to re-derive one.
+
+*Implemented differently:* an explicit `.as(T)` stays an `EXPR_CAST` instead
+of being rewritten into an `EXPR_CONV`. Rewriting would change the shape of a
+node the parser produced, which section 13 says sema does not do, and it
+saves the backend one `case` at the price of a dump that no longer shows what
+the source actually said.
 
 Anything that walks the AST must tolerate `EXPR_CONV` after this lands —
 which today means `ast_dump.c`, and it is in the same area.
@@ -519,6 +523,12 @@ one of them, not just the last.
 
 M1–M2 are the ones with real design risk. M3 is the bulk of the code.
 
+**Status: M0–M5 done.** M5 fell out of M3 rather than following it --
+`coerce()` is the only place an implicit conversion can be introduced, so
+inserting the node there covered every case at once. `demo.slop` checks clean
+with six conversions in it, every one either an enum member reaching an `i32`
+field or a vararg promotion, which is exactly what rules this strict predict.
+
 ---
 
 ## 11. How this gets tested
@@ -583,6 +593,17 @@ Ordered by how much it would hurt to get them wrong. The first three want a
    forbidden; `%` on floats is an error.
 11. **Duplicate `match` labels are not checked** in v0, consistent with
     duplicate enum values being explicitly legal and unchecked.
+12. **Array parameters and array return types are rejected**, alongside the
+    structs `GRAMMAR.md` already rejects. C decays an array parameter to a
+    pointer; v0 has no decay rule, and inventing one inside sema would be
+    inventing language.
+13. **A local is declared after its own initializer is checked**, so
+    `let i32 x = x;` names the outer `x` rather than reading itself. C does
+    the opposite, and it is a known trap.
+14. **`&x` is allowed on an immutable binding.** Combined with decision 7 --
+    mutability stops at a dereference -- that is a hole: the pointer can be
+    written through. Closing it needs `const`, which v0 does not have, so it
+    is recorded rather than patched over.
 
 ---
 
