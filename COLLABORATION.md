@@ -81,7 +81,8 @@ claimed.
 | `parser`  | `src/parser/`  | `parser.c`, `parser.h`                   | done   | `lexer.h`  |
 |           | `src/ast/`     | `ast.c`, `ast.h`, `ast_dump.c/.h`        | done   |            |
 | `sema`    | `src/sema/`    | `sema.c`, `sema.h`, `types.c`, `types.h` | **open — next** | `ast.h` |
-| `backend` | `src/backend/` | `ir.c`, `ir.h`, `codegen_*.c`            | open   | sema       |
+| `ir`      | `src/ir/`      | `ir.c`, `ir.h`                           | done   | —          |
+| `backend` | `src/backend/` | `backend.c/.h`, `backend_<target>.c`     | llvm + c done; lowering open | `ir.h`, sema |
 | `support` | `src/support/` | `arena`, `vec`, `diag`, `strview`, `srcpos` | in place, area open | — |
 | `driver`  | `src/driver/`  | `main.c`, `source_file.c/.h`, `token_dump.c/.h` | shared | everything |
 
@@ -244,22 +245,52 @@ Read this before planning, so you do not re-derive it.
   precedence rules are right (`a & b == c` is `(a & b) == c`, `.as(T)` is
   postfix); 17 distinct diagnostics with no hang or crash on deliberately
   broken input; ASan + UBSan clean.
-- **Sema and backend — not started.** Sema is next: GRAMMAR.md section 7
-  passes 2–4 (global name collection, type resolution, body checking)
-  against the semantics pinned down in section 6. It consumes `ast/ast.h`,
-  where enum member values are left unnumbered and global initializers left
-  as literals, because numbering and constant evaluation are its job.
-- **Tests — golden files over the built binary.** `tests/run.sh`, cases in
-  `tests/cases/`. A case named `lex_*` runs with `--tokens` and pins the
-  token stream; anything else runs the parser and pins the shape of the AST,
-  which is what freezes precedence, associativity and error recovery. Nine
-  cases cover the precedence ladder, unary-vs-postfix binding, the type
-  suffix table, every item and statement form, panic-mode recovery, maximal
-  munch, literals and lexical errors.
-  The suite was validated by injecting a precedence bug into the parser and
-  confirming it went red — a test suite that has never failed has not been
-  tested. **Sema will need cases of its own**: these only reach the parser,
-  and nothing here asserts anything about names, types or lvalues.
+- **Sema — not started.** GRAMMAR.md section 7 passes 2–4 (global name
+  collection, type resolution, body checking) against the semantics pinned
+  down in section 6. It consumes `ast/ast.h`, where enum member values are
+  left unnumbered and global initializers left as literals, because numbering
+  and constant evaluation are its job.
+- **IR — complete.** `src/ir/`. An in-memory model of LLVM IR: same value
+  model, same types, same instruction set, so the LLVM backend is a printer
+  rather than a translation. Two rules a backend may rely on: **no phi
+  nodes** — every local is an `alloca` written with `store` and read with
+  `load`, which is what clang -O0 emits and `opt -mem2reg` promotes away —
+  and **every value has an explicit name**, because LLVM's implicit `%0, %1`
+  numbering counts unnamed blocks and so couples a printer to traversal
+  order. `ir_verify()` checks a finished module (terminators, branch targets,
+  operand types, call arity) and a backend is entitled to assume it passed.
+- **Backends — llvm and c, both complete.** `src/backend/`. A backend is a
+  name and `int emit(const IrModule *, FILE *)`; the set of them is a static
+  table in `backend.c`, so adding one is a function, a table row and a
+  CMakeLists line. A backend cannot see the AST, the tokens or sema's
+  tables — that restriction is what keeps them swappable. The C backend
+  exists to keep the interface honest: SSA-with-basic-blocks versus C
+  declarations and statements is about as far apart as two textual targets
+  get, and it also bootstraps slop anywhere a C compiler exists. Compile its
+  output with `-fno-builtin` (see the comment in `backend_c.c`).
+- **Lowering AST → IR is the open piece**, and it is what `--backend=<name>`
+  waits on: choosing a backend only means something once there is a module to
+  hand it, and building one needs sema's resolved types. It belongs to
+  whoever finishes sema, or to a `backend/lowering` claim once sema lands.
+- **Tests — golden files, two suites, both under `ctest`.**
+  `tests/run.sh` covers the front end: cases in `tests/cases/`, where a case
+  named `lex_*` runs with `--tokens` and pins the token stream and anything
+  else runs the parser and pins the shape of the AST, which is what freezes
+  precedence, associativity and error recovery. Nine cases cover the
+  precedence ladder, unary-vs-postfix binding, the type suffix table, every
+  item and statement form, panic-mode recovery, maximal munch, literals and
+  lexical errors.
+  `tests/run_ir.sh` covers the IR and the backends from the hand-built module
+  in `tests/ir_demo.c`: golden text for each backend, and — the check that
+  actually proves something — the C backend's output compiled and run, which
+  must exit 36.
+  Both suites were validated by making them fail on purpose: a precedence bug
+  injected into the parser turned two front-end cases red, and deleting a
+  terminator made `ir_verify` reject the module. A test suite that has never
+  failed has not been tested.
+  **Sema will need cases of its own**: the front-end suite stops at the
+  parser, and nothing in either suite asserts anything about names, types or
+  lvalues.
 - **Layout:** sources live in `src/<area>/`, one directory per pass, and
   includes are spelled from `src/` down (`#include "lexer/lexer.h"`).
 - **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` dumps the

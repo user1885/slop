@@ -1,6 +1,7 @@
 /* slop v0 — lexes and parses a file, then dumps the AST.
  * `--tokens` stops after the lexer and dumps the token stream instead. */
 #include "ast/ast_dump.h"
+#include "backend/backend.h"
 #include "driver/source_file.h"
 #include "driver/token_dump.h"
 #include "lexer/lexer.h"
@@ -80,12 +81,20 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tokens") == 0) {
             dump_tokens = 1;
+        } else if (strcmp(argv[i], "--list-backends") == 0) {
+            backend_list(stdout);
+            return 0;
         } else {
             files++;
         }
     }
     if (files == 0) {
         fprintf(stderr, "usage: slop [--tokens] <file.slop>...\n");
+        fprintf(stderr, "       slop --list-backends\n");
+        /* --backend=<name> arrives with lowering: choosing a backend is only
+         * meaningful once there is an IrModule to hand it, and building one
+         * needs sema's resolved types. The backends themselves are done and
+         * exercised by tests/run_ir.sh. */
         return 2;
     }
 
