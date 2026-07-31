@@ -1,0 +1,40 @@
+# Pins the type grammar of GRAMMAR.md section 2. Suffixes apply left to
+# right, which is the opposite of C's declarator spiral, so the four
+# combinations in the spec's table are worth freezing exactly.
+
+struct Suffixes {
+    i32* a;      # pointer to i32
+    i32[10] b;   # array of 10 i32
+    i32*[10] c;  # array of 10 pointers to i32
+    i32[10]* d;  # pointer to array of 10 i32
+    u8** e;      # pointer to pointer to u8
+    Node[3]* f;  # pointer to array of 3 Node
+    Point g;     # a plain named type
+}
+
+# Every core type is spelled out once, so a lost keyword shows up here.
+struct Cores {
+    i8 a;
+    u8 b;
+    i32 c;
+    u32 d;
+    i64 e;
+    u64 f;
+    f32 g;
+    f64 h;
+    b8 i;
+    b32 j;
+    b64 k;
+}
+
+fn takes(i32*[2] p, u8** q, Node[3]* r) -> i32[4]* {
+    return null;
+}
+
+fn returns_pointer() -> Point* {
+    return null;
+}
+
+fn returns_void() -> void {
+    return;
+}

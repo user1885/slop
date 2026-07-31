@@ -1,0 +1,17 @@
+# Pins numeric and textual literals, including the boundary between an int
+# followed by `.as(` and a genuine float. A float needs a digit after the
+# dot, so `1.as(f64)` is three tokens and `2.0.as(f32)` is four.
+0 1 255 0x0 0xFF 0xdeadBEEF 18446744073709551615
+1.5 0.001 3.14159
+1.as(f64)
+2.0.as(f32)
+
+'a' '\0' '\n' '\r' '\t' '\\' '\'' '"' '\x41' '\x7F'
+
+"" "plain" "tab\there" "nl\n" "quote:\"" "backslash:\\" "hex:\x7F"
+
+# keywords must not lex as identifiers, and near-misses must
+let fn if else while break continue return struct enum extern mut as sizeof match
+true false null
+i8 u8 i32 u32 i64 u64 f32 f64 b8 b32 b64 void
+lets fns iff elsewhere i320 _ _x x_ X9 __

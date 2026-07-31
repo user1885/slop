@@ -1,0 +1,34 @@
+# Pins unary vs postfix binding. GRAMMAR.md section 5 makes casts postfix,
+# so `.as(T)` binds as tightly as a call, an index or a field — tighter than
+# any unary operator. Getting this wrong is silent: the program still parses,
+# it just means something else.
+
+fn shapes(i32 x, i32* p, Node* n, i32[4] arr, Point s) -> void {
+    # -(x as i32), not (-x) as i32
+    let i32 a = -x.as(i32);
+
+    # (!x) == x: unary is tighter than any binary operator
+    let b8 b = !x == x;
+    let i32 c = ~x & x;
+
+    # Deref and address-of against postfix: *(p[0]) and &(s.f)
+    let i32 d = *p + 1;
+    let i32 e = arr[0] + arr[1];
+    let i32* f = &s.f;
+
+    # A postfix chain stays flat and left-to-right, no wrapping parens.
+    let i64 g = n.as(BinNode*).lhs.as(i64);
+    let i32 h = s.f.g.h;
+    let i32 i = grid[0][1];
+    let i32 j = call(x)(x);
+    let i32 k = obj.method(x).field;
+
+    # sizeof takes a Type, not an expression, and the type may have suffixes.
+    let u64 l = sizeof(i32);
+    let u64 m = sizeof(i32*[4]);
+    let u64 n2 = sizeof(Point);
+
+    # Parens only where a binary operand needs them.
+    let i64 o = (x < 1).as(i64);
+    let i32 q = -(x + 1);
+}

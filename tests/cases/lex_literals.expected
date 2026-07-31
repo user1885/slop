@@ -1,0 +1,82 @@
+   4:1   int literal      0  = 0
+   4:3   int literal      1  = 1
+   4:5   int literal      255  = 255
+   4:9   int literal      0x0  = 0
+   4:13  int literal      0xFF  = 255
+   4:18  int literal      0xdeadBEEF  = 3735928559
+   4:29  int literal      18446744073709551615  = 18446744073709551615
+   5:1   float literal    1.5  = 1.5
+   5:5   float literal    0.001  = 0.001
+   5:11  float literal    3.14159  = 3.14159
+   6:1   int literal      1  = 1
+   6:2   .                .
+   6:3   as               as
+   6:5   (                (
+   6:6   f64              f64
+   6:9   )                )
+   7:1   float literal    2.0  = 2
+   7:4   .                .
+   7:5   as               as
+   7:7   (                (
+   7:8   f32              f32
+   7:11  )                )
+   9:1   char literal     'a'  = 97
+   9:5   char literal     '\0'  = 0
+   9:10  char literal     '\n'  = 10
+   9:15  char literal     '\r'  = 13
+   9:20  char literal     '\t'  = 9
+   9:25  char literal     '\\'  = 92
+   9:30  char literal     '\''  = 39
+   9:35  char literal     '"'  = 34
+   9:39  char literal     '\x41'  = 65
+   9:46  char literal     '\x7F'  = 127
+  11:1   string literal   ""  = "" (0 bytes)
+  11:4   string literal   "plain"  = "plain" (5 bytes)
+  11:12  string literal   "tab\there"  = "tab\there" (8 bytes)
+  11:24  string literal   "nl\n"  = "nl\n" (3 bytes)
+  11:31  string literal   "quote:\""  = "quote:\"" (7 bytes)
+  11:42  string literal   "backslash:\\"  = "backslash:\\" (11 bytes)
+  11:57  string literal   "hex:\x7F"  = "hex:\x7F" (5 bytes)
+  14:1   let              let
+  14:5   fn               fn
+  14:8   if               if
+  14:11  else             else
+  14:16  while            while
+  14:22  break            break
+  14:28  continue         continue
+  14:37  return           return
+  14:44  struct           struct
+  14:51  enum             enum
+  14:56  extern           extern
+  14:63  mut              mut
+  14:67  as               as
+  14:70  sizeof           sizeof
+  14:77  match            match
+  15:1   true             true
+  15:6   false            false
+  15:12  null             null
+  16:1   i8               i8
+  16:4   u8               u8
+  16:7   i32              i32
+  16:11  u32              u32
+  16:15  i64              i64
+  16:19  u64              u64
+  16:23  f32              f32
+  16:27  f64              f64
+  16:31  b8               b8
+  16:34  b32              b32
+  16:38  b64              b64
+  16:42  void             void
+  17:1   identifier       lets
+  17:6   identifier       fns
+  17:10  identifier       iff
+  17:14  identifier       elsewhere
+  17:24  identifier       i320
+  17:29  identifier       _
+  17:31  identifier       _x
+  17:34  identifier       x_
+  17:37  identifier       X9
+  17:40  identifier       __
+  18:1   end of file      
+lex_literals.slop: 80 tokens, 0 error(s)
+exit: 0

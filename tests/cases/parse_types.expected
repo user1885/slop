@@ -1,0 +1,33 @@
+program parse_types.slop (5 items)
+  struct Suffixes
+    i32* a
+    i32[10] b
+    i32*[10] c
+    i32[10]* d
+    u8** e
+    Node[3]* f
+    Point g
+  struct Cores
+    i8 a
+    u8 b
+    i32 c
+    u32 d
+    i64 e
+    u64 f
+    f32 g
+    f64 h
+    b8 i
+    b32 j
+    b64 k
+  fn takes(i32*[2] p, u8** q, Node[3]* r) -> i32[4]*
+    block (1)
+      return
+        null
+  fn returns_pointer() -> Point*
+    block (1)
+      return
+        null
+  fn returns_void() -> void
+    block (1)
+      return
+exit: 0

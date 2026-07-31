@@ -26,3 +26,10 @@ target_include_directories(slop PRIVATE src)
 if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(slop PRIVATE -Wall -Wextra)
 endif ()
+
+# Golden-file tests over the built binary: `ctest --test-dir build`, or
+# `./tests/run.sh` directly. See tests/run.sh for what they pin and how to
+# accept a deliberate change to the output.
+enable_testing()
+add_test(NAME front-end
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run.sh $<TARGET_FILE:slop>)

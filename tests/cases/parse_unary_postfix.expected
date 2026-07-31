@@ -1,0 +1,79 @@
+program parse_unary_postfix.slop (1 items)
+  fn shapes(i32 x, i32* p, Node* n, i32[4] arr, Point s) -> void
+    block (16)
+      let i32 a
+        unary -
+          cast to i32
+            name x
+      let b8 b
+        binary ==
+          unary !
+            name x
+          name x
+      let i32 c
+        binary &
+          unary ~
+            name x
+          name x
+      let i32 d
+        binary +
+          unary *
+            name p
+          int 1
+      let i32 e
+        binary +
+          index
+            name arr
+            int 0
+          index
+            name arr
+            int 1
+      let i32* f
+        unary &
+          field .f
+            name s
+      let i64 g
+        cast to i64
+          field .lhs
+            cast to BinNode*
+              name n
+      let i32 h
+        field .h
+          field .g
+            field .f
+              name s
+      let i32 i
+        index
+          index
+            name grid
+            int 0
+          int 1
+      let i32 j
+        call (1 arg)
+          call (1 arg)
+            name call
+            name x
+          name x
+      let i32 k
+        field .field
+          call (1 arg)
+            field .method
+              name obj
+            name x
+      let u64 l
+        sizeof i32
+      let u64 m
+        sizeof i32*[4]
+      let u64 n2
+        sizeof Point
+      let i64 o
+        cast to i64
+          binary <
+            name x
+            int 1
+      let i32 q
+        unary -
+          binary +
+            name x
+            int 1
+exit: 0

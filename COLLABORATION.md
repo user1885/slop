@@ -188,12 +188,16 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build
   `CMakeLists.txt` for a reason.
 - Clean under sanitizers on both a valid and a deliberately broken input:
   ```bash
-  gcc -std=c99 -Wall -Wextra -g -fsanitize=address,undefined -o /tmp/slop-asan *.c
+  gcc -std=c99 -Wall -Wextra -g -fsanitize=address,undefined -Isrc -o /tmp/slop-asan src/*/*.c
   /tmp/slop-asan examples/demo.slop
   ```
+- **The golden tests pass**: `ctest --test-dir build`, or `./tests/run.sh`.
+  If your change alters the token or AST dump on purpose, regenerate with
+  `./tests/run.sh --update` and **read the resulting diff before committing
+  it** — an accepted golden nobody looked at proves only that the output did
+  not change, never that it was right.
 - `./build/slop examples/demo.slop` still works. That file exercises every v0
-  construct and is the closest thing to a regression test until there is a
-  test suite.
+  construct in one program, which the focused test cases deliberately do not.
 - Formatted with the project `.clang-format` (`clang-format -i *.c *.h`).
 - C99, no compiler extensions. This compiler must eventually be written in
   slop, so keep the C boring.
@@ -245,10 +249,17 @@ Read this before planning, so you do not re-derive it.
   against the semantics pinned down in section 6. It consumes `ast/ast.h`,
   where enum member values are left unnumbered and global initializers left
   as literals, because numbering and constant evaluation are its job.
-- **No test suite yet.** `examples/demo.slop` is the only regression check
-  and it only proves the front end does not crash — nothing asserts the tree
-  is *correct*. Whoever needs real tests should claim `support` and build
-  them; do not bolt tests onto a pass branch.
+- **Tests — golden files over the built binary.** `tests/run.sh`, cases in
+  `tests/cases/`. A case named `lex_*` runs with `--tokens` and pins the
+  token stream; anything else runs the parser and pins the shape of the AST,
+  which is what freezes precedence, associativity and error recovery. Nine
+  cases cover the precedence ladder, unary-vs-postfix binding, the type
+  suffix table, every item and statement form, panic-mode recovery, maximal
+  munch, literals and lexical errors.
+  The suite was validated by injecting a precedence bug into the parser and
+  confirming it went red — a test suite that has never failed has not been
+  tested. **Sema will need cases of its own**: these only reach the parser,
+  and nothing here asserts anything about names, types or lvalues.
 - **Layout:** sources live in `src/<area>/`, one directory per pass, and
   includes are spelled from `src/` down (`#include "lexer/lexer.h"`).
 - **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` dumps the

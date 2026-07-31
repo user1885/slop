@@ -1,0 +1,29 @@
+# Pins the precedence ladder of GRAMMAR.md section 5, loosest to tightest,
+# and the associativity of every binary level. The dump is a tree, so a
+# regression in any level shows up as re-nesting here.
+
+fn ladder(i32 a, i32 b, i32 c) -> void {
+    # || is loosest, && next: a || (b && c)
+    let b8 p = a < b || a > b && a != b;
+
+    # The rule that differs from C: bitwise binds TIGHTER than comparison,
+    # so this is (a & b) == c, never a & (b == c).
+    let b8 q = a & b == c;
+    let b8 r = a | b != c;
+    let b8 s = a ^ b < c;
+
+    # | looser than ^ looser than &: a | (b ^ (c & a))
+    let i32 t = a | b ^ c & a;
+
+    # Shifts sit between & and +: a & (b << (c + a))
+    let i32 u = a & b << c + a;
+
+    # * / % tighter than + -: a + ((b * c) - (a / b))
+    let i32 v = a + b * c - a / b;
+
+    # Every binary level is left-associative.
+    let i32 w = a - b - c;
+    let i32 x = a / b / c;
+    let i32 y = a << b << c;
+    let b8 z = a < b == c > a;
+}

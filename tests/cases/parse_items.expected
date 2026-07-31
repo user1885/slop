@@ -1,0 +1,44 @@
+program parse_items.slop (15 items)
+  extern "c"
+    fn puts(u8* s) -> i32
+    fn printf(u8* fmt, ...) -> i32
+    fn exit(i32 code) -> void
+    fn now() -> i64
+  struct Empty
+  struct Point
+    i32 x
+    i32 y
+  enum Plain : i32
+    A
+    B
+    C
+  enum Sized : u8
+    X = 1
+    Y = 2
+  enum Mixed : i32
+    M
+    N = 5
+    O
+  let u8* NAME
+    string "slop"
+  let mut i32 counter
+    int 0
+  let mut i64[26] table
+  let b8 FLAG
+    bool true
+  let f64 RATIO
+    float 0.5
+  let Point* HEAD
+    null
+  fn with_params(mut i32 x, u8* s, Point* p) -> i32
+    block (1)
+      return
+        name x
+  fn no_return_type() -> void
+    block (1)
+      return
+  fn no_params() -> i32
+    block (1)
+      return
+        int 0
+exit: 0

@@ -1,0 +1,86 @@
+program parse_precedence.slop (1 items)
+  fn ladder(i32 a, i32 b, i32 c) -> void
+    block (11)
+      let b8 p
+        binary ||
+          binary <
+            name a
+            name b
+          binary &&
+            binary >
+              name a
+              name b
+            binary !=
+              name a
+              name b
+      let b8 q
+        binary ==
+          binary &
+            name a
+            name b
+          name c
+      let b8 r
+        binary !=
+          binary |
+            name a
+            name b
+          name c
+      let b8 s
+        binary <
+          binary ^
+            name a
+            name b
+          name c
+      let i32 t
+        binary |
+          name a
+          binary ^
+            name b
+            binary &
+              name c
+              name a
+      let i32 u
+        binary &
+          name a
+          binary <<
+            name b
+            binary +
+              name c
+              name a
+      let i32 v
+        binary -
+          binary +
+            name a
+            binary *
+              name b
+              name c
+          binary /
+            name a
+            name b
+      let i32 w
+        binary -
+          binary -
+            name a
+            name b
+          name c
+      let i32 x
+        binary /
+          binary /
+            name a
+            name b
+          name c
+      let i32 y
+        binary <<
+          binary <<
+            name a
+            name b
+          name c
+      let b8 z
+        binary ==
+          binary <
+            name a
+            name b
+          binary >
+            name c
+            name a
+exit: 0

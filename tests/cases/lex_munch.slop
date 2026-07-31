@@ -1,0 +1,12 @@
+# Pins maximal munch. GRAMMAR.md section 1 spells out the probe order that
+# matters: <<= before << before <= before <, -> before -, and both == and =>
+# before =. Every operator and punctuator in the language appears here.
+a <<= 1; a <= 1; a << 1; a < 1;
+b >>= 1; b >= 1; b >> 1; b > 1;
+c -> d; c - d; c -= d;
+e == f; e => f; e = f;
+g != h; g ! h;
+x ... y; x . y; x .. y;
+&& & &= || | |= ^ ^= ~
++ += - -= * *= / /= % %=
+( ) { } [ ] , ; :
