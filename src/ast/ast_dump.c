@@ -1,45 +1,6 @@
-#include "ast.h"
+#include "ast/ast_dump.h"
 
 #include <ctype.h>
-#include <string.h>
-
-int strview_eq(StrView v, const char *cstr) {
-    size_t n = strlen(cstr);
-    if (v.len < 0 || (size_t)v.len != n) {
-        return 0;
-    }
-    return memcmp(v.data, cstr, n) == 0;
-}
-
-Type *type_new(Arena *a, TypeKind kind, SrcPos pos) {
-    Type *t = arena_alloc(a, sizeof(Type));
-    t->kind = kind;
-    t->pos = pos;
-    return t;
-}
-
-Expr *expr_new(Arena *a, ExprKind kind, SrcPos pos) {
-    Expr *e = arena_alloc(a, sizeof(Expr));
-    e->kind = kind;
-    e->pos = pos;
-    return e;
-}
-
-Stmt *stmt_new(Arena *a, StmtKind kind, SrcPos pos) {
-    Stmt *s = arena_alloc(a, sizeof(Stmt));
-    s->kind = kind;
-    s->pos = pos;
-    return s;
-}
-
-Item *item_new(Arena *a, ItemKind kind, SrcPos pos) {
-    Item *it = arena_alloc(a, sizeof(Item));
-    it->kind = kind;
-    it->pos = pos;
-    return it;
-}
-
-/* -------------------------------------------------------------- printing */
 
 static void print_view(FILE *out, StrView v) {
     if (v.data == NULL) {

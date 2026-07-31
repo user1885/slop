@@ -1,9 +1,9 @@
-#ifndef SLOP_PARSER_H
-#define SLOP_PARSER_H
+#ifndef SLOP_PARSER_PARSER_H
+#define SLOP_PARSER_PARSER_H
 
-#include "arena.h"
-#include "ast.h"
-#include "lexer.h"
+#include "ast/ast.h"
+#include "lexer/lexer.h"
+#include "support/arena.h"
 
 #include <stddef.h>
 
@@ -31,4 +31,4 @@
 Program *parse_program(Arena *arena, const Token *tokens, size_t count, const char *file,
                        int *out_errors);
 
-#endif /* SLOP_PARSER_H */
+#endif /* SLOP_PARSER_PARSER_H */

@@ -1,11 +1,12 @@
-#ifndef SLOP_AST_H
-#define SLOP_AST_H
+#ifndef SLOP_AST_AST_H
+#define SLOP_AST_AST_H
 
-#include "arena.h"
-#include "lexer.h"
+#include "lexer/lexer.h"
+#include "support/arena.h"
+#include "support/srcpos.h"
+#include "support/strview.h"
 
 #include <stdint.h>
-#include <stdio.h>
 
 typedef struct Type Type;
 typedef struct Expr Expr;
@@ -15,26 +16,11 @@ typedef struct Item Item;
 /* The parser produces a tree, never a type: no name is resolved and no
  * constant is folded here. A child may be NULL when the parser recovered
  * from an error, so every consumer must be NULL-tolerant until the parse
- * has been confirmed error-free. */
-
-/* Where a node came from. `file` is the path the parser was handed and must
- * outlive the arena; line and col are the lexer's, 1-based. */
-typedef struct {
-    const char *file;
-    int32_t line;
-    int32_t col;
-} SrcPos;
-
-/* A name or a string literal. Identifiers point into the source buffer, so
- * it has to outlive the AST; decoded string literals are copied into the
- * arena, because the lexer's pool dies with the Lexer. Not NUL-terminated in
- * the first case, NUL-terminated in the second. */
-typedef struct {
-    const char *data;
-    int32_t len;
-} StrView;
-
-int strview_eq(StrView v, const char *cstr);
+ * has been confirmed error-free.
+ *
+ * Names in the tree are StrViews into the source buffer, so it has to
+ * outlive the arena; decoded string literals are copied into the arena
+ * instead, because the lexer's pool dies with the Lexer. */
 
 /* ------------------------------------------------------------------ types */
 
@@ -264,18 +250,13 @@ typedef struct {
 
 /* -------------------------------------------------------- constructors */
 
+/* Each returns a zeroed node of that kind: whatever the caller does not set
+ * is NULL or 0, which is what the parser leans on while filling a node in
+ * field by field. */
+
 Type *type_new(Arena *a, TypeKind kind, SrcPos pos);
 Expr *expr_new(Arena *a, ExprKind kind, SrcPos pos);
 Stmt *stmt_new(Arena *a, StmtKind kind, SrcPos pos);
 Item *item_new(Arena *a, ItemKind kind, SrcPos pos);
 
-/* -------------------------------------------------------------- printing */
-
-/* Writes the type back in source syntax (`i32*[10]`). */
-void ast_print_type(FILE *out, const Type *t);
-
-/* Indented tree dump, one node per line. Round-tripping is not a goal; this
- * exists so the parser can be eyeballed before sema exists. */
-void ast_dump(FILE *out, const Program *prog);
-
-#endif /* SLOP_AST_H */
+#endif /* SLOP_AST_AST_H */
