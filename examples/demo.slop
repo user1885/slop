@@ -1,0 +1,563 @@
+# demo.slop — a tiny expression interpreter.
+#
+# Deliberately shaped like the real bootstrap compiler: arena allocator,
+# lexer, tagged AST via the common-prefix trick, layered recursive-descent
+# parser, tree-walking evaluator. Touches every construct in v0.
+#
+# main() comes first on purpose: nothing here is declared before it is used.
+
+extern "c" {
+    fn malloc(u64 size) -> void*;
+    fn printf(u8* fmt, ...) -> i32;
+    fn exit(i32 code) -> void;
+}
+
+fn main() -> i32 {
+    printf("%s\n", VERSION);
+
+    let Arena* arena = arena_new(64 * 1024);
+
+    # No initializers for arrays yet, so the table is filled at runtime.
+    let mut u8*[6] progs;
+    progs[0] = "a = 6";
+    progs[1] = "b = a * 7 - 4 % 3";
+    progs[2] = "";
+    progs[3] = "c = (a + b) * 2 < 100";
+    progs[4] = "1 / 0";
+    progs[5] = "d = ~a & 0xFF | 1";
+
+    let mut i64 total = 0;
+    let mut i32 evaluated = 0;
+    let mut i32 i = 0;
+
+    while i < 6 {
+        let u8* src = progs[i];
+        i += 1;
+
+        if src[0] == '\0' {
+            continue;
+        }
+
+        let Node* ast = parse(arena, src);
+        if ast == null {
+            printf("  %-24s parse error\n", src);
+            continue;
+        }
+
+        let mut b8 ok = true;
+        let i64 value = eval(ast, &ok);
+        if !ok {
+            printf("  %-24s eval error\n", src);
+            continue;
+        }
+
+        printf("  %-24s = %lld  (%d digits)\n", src, value, digit_count(value));
+        total += value;
+        evaluated += 1;
+
+        if evaluated >= 4 {
+            break;
+        }
+    }
+
+    report_average(total, evaluated);
+    printf("hash(\"slop\") = 0x%08X, popcount = %d\n",
+           hash_name("slop", 4), popcount(0xF0F0F0F0));
+    printf("rgb = 0x%06X\n", pack_rgb(0x11, 0x22, 0x33));
+
+    if g_errors != 0 {
+        printf("%d error(s)\n", g_errors);
+        return 1;
+    }
+    return 0;
+}
+
+# ------------------------------------------------------------------ globals
+
+let u8* VERSION = "slop demo 0.1";
+let mut i32 g_errors = 0;
+let mut i64[26] g_vars;      # single-letter variables, zero-initialized
+
+# ------------------------------------------------------------------- arena
+
+struct Arena {
+    u8* base;
+    u64 used;
+    u64 cap;
+}
+
+fn arena_new(u64 cap) -> Arena* {
+    let Arena* a = malloc(sizeof(Arena)).as(Arena*);
+    a.base = malloc(cap).as(u8*);
+    a.used = 0;
+    a.cap = cap;
+    return a;
+}
+
+fn arena_alloc(Arena* a, u64 size) -> void* {
+    let u64 aligned = (size + 7) & ~7;
+    if a.used + aligned > a.cap {
+        printf("arena exhausted\n");
+        exit(1);
+    }
+    let u8* p = a.base + a.used;       # scaled by sizeof(u8) == 1
+    a.used += aligned;
+    return p.as(void*);
+}
+
+# ------------------------------------------------------------------ tokens
+
+enum TokKind : u8 {
+    TOK_EOF = 0,
+    TOK_INT,
+    TOK_NAME,
+    TOK_PLUS,
+    TOK_MINUS,
+    TOK_STAR,
+    TOK_SLASH,
+    TOK_PERCENT,
+    TOK_LT,
+    TOK_AMP,
+    TOK_PIPE,
+    TOK_TILDE,
+    TOK_EQ,
+    TOK_LPAREN,
+    TOK_RPAREN,
+}
+
+struct Token {
+    TokKind kind;
+    i64 ival;
+    u8 name;
+}
+
+struct Lexer {
+    u8* src;
+    u64 pos;
+    Token cur;          # struct by value as a field is fine
+}
+
+fn is_digit(u8 c) -> b8 {
+    return c >= '0' && c <= '9';
+}
+
+fn is_alpha(u8 c) -> b8 {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+fn lex_next(Lexer* l) -> void {
+    while l.src[l.pos] == ' ' || l.src[l.pos] == '\t' {
+        l.pos += 1;
+    }
+
+    let u8 c = l.src[l.pos];
+    l.cur.ival = 0;
+    l.cur.name = 0;
+
+    if c == '\0' {
+        l.cur.kind = TOK_EOF;
+        return;
+    }
+
+    if is_digit(c) {
+        let mut i64 v = 0;
+        if c == '0' && l.src[l.pos + 1] == 'x' {
+            l.pos += 2;
+            while is_hex(l.src[l.pos]) {
+                v <<= 4;
+                v |= hex_val(l.src[l.pos]).as(i64);
+                l.pos += 1;
+            }
+        } else {
+            while is_digit(l.src[l.pos]) {
+                v *= 10;
+                v += (l.src[l.pos] - '0').as(i64);
+                l.pos += 1;
+            }
+        }
+        l.cur.kind = TOK_INT;
+        l.cur.ival = v;
+        return;
+    }
+
+    if is_alpha(c) {
+        l.cur.kind = TOK_NAME;
+        l.cur.name = c;
+        l.pos += 1;
+        while is_alpha(l.src[l.pos]) || is_digit(l.src[l.pos]) {
+            l.pos += 1;
+        }
+        return;
+    }
+
+    l.pos += 1;
+    match c {
+        '+' => l.cur.kind = TOK_PLUS;
+        '-' => l.cur.kind = TOK_MINUS;
+        '*' => l.cur.kind = TOK_STAR;
+        '/' => l.cur.kind = TOK_SLASH;
+        '%' => l.cur.kind = TOK_PERCENT;
+        '<' => l.cur.kind = TOK_LT;
+        '&' => l.cur.kind = TOK_AMP;
+        '|' => l.cur.kind = TOK_PIPE;
+        '~' => l.cur.kind = TOK_TILDE;
+        '=' => l.cur.kind = TOK_EQ;
+        '(' => l.cur.kind = TOK_LPAREN;
+        ')' => l.cur.kind = TOK_RPAREN;
+        _ => {
+            printf("bad character '%c'\n", c);
+            g_errors += 1;
+            l.cur.kind = TOK_EOF;
+        }
+    }
+}
+
+fn is_hex(u8 c) -> b8 {
+    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+fn hex_val(u8 c) -> u8 {
+    if is_digit(c) {
+        return c - '0';
+    }
+    return (c | 0x20) - 'a' + 10;
+}
+
+# --------------------------------------------------------------------- ast
+
+enum NodeKind {
+    N_INT,
+    N_VAR,
+    N_BIN,
+    N_UN,
+    N_ASSIGN,
+}
+
+struct Node     { i32 kind; }
+struct IntNode  { i32 kind; i64 value; }
+struct VarNode  { i32 kind; u8 name; }
+struct BinNode  { i32 kind; TokKind op; Node* lhs; Node* rhs; }
+struct UnNode   { i32 kind; TokKind op; Node* operand; }
+struct AsgnNode { i32 kind; u8 name; Node* value; }
+
+fn node_int(Arena* a, i64 v) -> Node* {
+    let IntNode* n = arena_alloc(a, sizeof(IntNode)).as(IntNode*);
+    n.kind = N_INT;
+    n.value = v;
+    return n.as(Node*);
+}
+
+fn node_var(Arena* a, u8 name) -> Node* {
+    let VarNode* n = arena_alloc(a, sizeof(VarNode)).as(VarNode*);
+    n.kind = N_VAR;
+    n.name = name;
+    return n.as(Node*);
+}
+
+fn node_bin(Arena* a, TokKind op, Node* lhs, Node* rhs) -> Node* {
+    if lhs == null || rhs == null {
+        return null;
+    }
+    let BinNode* n = arena_alloc(a, sizeof(BinNode)).as(BinNode*);
+    n.kind = N_BIN;
+    n.op = op;
+    n.lhs = lhs;
+    n.rhs = rhs;
+    return n.as(Node*);
+}
+
+# --------------------------------------------------------------- the parser
+
+struct Parser {
+    Lexer* lex;
+    Arena* arena;
+}
+
+fn parse(Arena* a, u8* src) -> Node* {
+    let Lexer* l = arena_alloc(a, sizeof(Lexer)).as(Lexer*);
+    l.src = src;
+    l.pos = 0;
+    lex_next(l);
+
+    let Parser* p = arena_alloc(a, sizeof(Parser)).as(Parser*);
+    p.lex = l;
+    p.arena = a;
+
+    let Node* n = parse_stmt(p);
+    if p.lex.cur.kind != TOK_EOF {
+        g_errors += 1;
+        return null;
+    }
+    return n;
+}
+
+fn parse_stmt(Parser* p) -> Node* {
+    # "x = expr" needs one token of lookahead past the name, which the
+    # single-token lexer cannot give. Peek at the raw source instead.
+    if p.lex.cur.kind == TOK_NAME {
+        let u8 name = p.lex.cur.name;
+        let u64 save_pos = p.lex.pos;
+        lex_next(p.lex);
+        if p.lex.cur.kind == TOK_EQ {
+            lex_next(p.lex);
+            let Node* value = parse_expr(p);
+            if value == null {
+                return null;
+            }
+            let AsgnNode* n = arena_alloc(p.arena, sizeof(AsgnNode)).as(AsgnNode*);
+            n.kind = N_ASSIGN;
+            n.name = name;
+            n.value = value;
+            return n.as(Node*);
+        }
+        # Not an assignment: rewind and let the expression parser see it.
+        p.lex.pos = save_pos;
+        p.lex.cur.kind = TOK_NAME;
+        p.lex.cur.name = name;
+    }
+    return parse_expr(p);
+}
+
+fn parse_expr(Parser* p) -> Node* {
+    return parse_cmp(p);
+}
+
+fn parse_cmp(Parser* p) -> Node* {
+    let mut Node* lhs = parse_bitor(p);
+    while p.lex.cur.kind == TOK_LT {
+        lex_next(p.lex);
+        lhs = node_bin(p.arena, TOK_LT, lhs, parse_bitor(p));
+    }
+    return lhs;
+}
+
+fn parse_bitor(Parser* p) -> Node* {
+    let mut Node* lhs = parse_bitand(p);
+    while p.lex.cur.kind == TOK_PIPE {
+        lex_next(p.lex);
+        lhs = node_bin(p.arena, TOK_PIPE, lhs, parse_bitand(p));
+    }
+    return lhs;
+}
+
+fn parse_bitand(Parser* p) -> Node* {
+    let mut Node* lhs = parse_add(p);
+    while p.lex.cur.kind == TOK_AMP {
+        lex_next(p.lex);
+        lhs = node_bin(p.arena, TOK_AMP, lhs, parse_add(p));
+    }
+    return lhs;
+}
+
+fn parse_add(Parser* p) -> Node* {
+    let mut Node* lhs = parse_mul(p);
+    while p.lex.cur.kind == TOK_PLUS || p.lex.cur.kind == TOK_MINUS {
+        let TokKind op = p.lex.cur.kind;
+        lex_next(p.lex);
+        lhs = node_bin(p.arena, op, lhs, parse_mul(p));
+    }
+    return lhs;
+}
+
+fn parse_mul(Parser* p) -> Node* {
+    let mut Node* lhs = parse_unary(p);
+    while p.lex.cur.kind == TOK_STAR
+       || p.lex.cur.kind == TOK_SLASH
+       || p.lex.cur.kind == TOK_PERCENT {
+        let TokKind op = p.lex.cur.kind;
+        lex_next(p.lex);
+        lhs = node_bin(p.arena, op, lhs, parse_unary(p));
+    }
+    return lhs;
+}
+
+fn parse_unary(Parser* p) -> Node* {
+    if p.lex.cur.kind == TOK_MINUS || p.lex.cur.kind == TOK_TILDE {
+        let TokKind op = p.lex.cur.kind;
+        lex_next(p.lex);
+        let Node* operand = parse_unary(p);
+        if operand == null {
+            return null;
+        }
+        let UnNode* n = arena_alloc(p.arena, sizeof(UnNode)).as(UnNode*);
+        n.kind = N_UN;
+        n.op = op;
+        n.operand = operand;
+        return n.as(Node*);
+    }
+    return parse_primary(p);
+}
+
+fn parse_primary(Parser* p) -> Node* {
+    match p.lex.cur.kind {
+        TOK_INT => {
+            let i64 v = p.lex.cur.ival;
+            lex_next(p.lex);
+            return node_int(p.arena, v);
+        }
+        TOK_NAME => {
+            let u8 name = p.lex.cur.name;
+            lex_next(p.lex);
+            return node_var(p.arena, name);
+        }
+        TOK_LPAREN => {
+            lex_next(p.lex);
+            let Node* inner = parse_expr(p);
+            if p.lex.cur.kind != TOK_RPAREN {
+                g_errors += 1;
+                return null;
+            }
+            lex_next(p.lex);
+            return inner;
+        }
+        _ => {
+            g_errors += 1;
+            return null;
+        }
+    }
+}
+
+# ------------------------------------------------------------------- eval
+
+fn slot_of(u8 name) -> i64* {
+    let i32 idx = ((name | 0x20) - 'a').as(i32);
+    if idx < 0 || idx >= 26 {
+        return null;
+    }
+    return &g_vars[idx];
+}
+
+fn eval(Node* n, b8* ok) -> i64 {
+    match n.kind {
+        N_INT => return n.as(IntNode*).value;
+
+        N_VAR => {
+            let i64* slot = slot_of(n.as(VarNode*).name);
+            if slot == null {
+                *ok = false;
+                return 0;
+            }
+            return *slot;
+        }
+        N_ASSIGN => {
+            let AsgnNode* a = n.as(AsgnNode*);
+            let i64 v = eval(a.value, ok);
+            let i64* dst = slot_of(a.name);
+            if dst == null || !*ok {
+                *ok = false;
+                return 0;
+            }
+            *dst = v;
+            return v;
+        }
+        N_UN => {
+            let UnNode* u = n.as(UnNode*);
+            let i64 x = eval(u.operand, ok);
+            if u.op == TOK_MINUS {
+                return -x;
+            }
+            return ~x;
+        }
+        N_BIN => {
+            let BinNode* b = n.as(BinNode*);
+            let i64 lhs = eval(b.lhs, ok);
+            let i64 rhs = eval(b.rhs, ok);
+            if !*ok {
+                return 0;
+            }
+            match b.op {
+                TOK_PLUS  => return lhs + rhs;
+                TOK_MINUS => return lhs - rhs;
+                TOK_STAR  => return lhs * rhs;
+                TOK_AMP   => return lhs & rhs;
+                TOK_PIPE  => return lhs | rhs;
+                TOK_LT    => return (lhs < rhs).as(i64);
+                TOK_SLASH, TOK_PERCENT => {
+                    if rhs == 0 {
+                        *ok = false;
+                        return 0;
+                    }
+                    if b.op == TOK_SLASH {
+                        return lhs / rhs;
+                    }
+                    return lhs % rhs;
+                }
+                _ => {
+                    *ok = false;
+                    return 0;
+                }
+            }
+        }
+        _ => {
+            *ok = false;
+            return 0;
+        }
+    }
+}
+
+# ----------------------------------------------------------------- helpers
+
+fn digit_count(i64 n) -> i32 {
+    let mut i64 v = n;
+    let mut i32 d = 0;
+    if v == 0 {
+        return 1;
+    }
+    if v < 0 {
+        v = -v;
+        d += 1;
+    }
+    while v > 0 {
+        v /= 10;
+        d += 1;
+    }
+    return d;
+}
+
+fn popcount(u64 x) -> i32 {
+    let mut u64 v = x;
+    let mut i32 n = 0;
+    while v != 0 {
+        n += (v & 1).as(i32);
+        v >>= 1;
+    }
+    return n;
+}
+
+fn hash_name(u8* s, i32 len) -> u32 {
+    let mut u32 h = 0x811C9DC5;
+    let mut i32 i = 0;
+    while i < len {
+        h ^= s[i].as(u32);
+        h *= 0x01000193;
+        i += 1;
+    }
+    h &= 0x7FFFFFFF;
+    h |= 1;
+    return h;
+}
+
+fn pack_rgb(u8 r, u8 g, u8 b) -> u32 {
+    let mut u32 v = r.as(u32);
+    v <<= 8;
+    v |= g.as(u32);
+    v <<= 8;
+    v |= b.as(u32);
+    return v;
+}
+
+fn report_average(i64 total, i32 count) -> void {
+    if count == 0 {
+        return;
+    }
+    let f64 avg = total.as(f64) / count.as(f64);
+    let f32 narrowed = avg.as(f32);
+    let mut i64 checksum = total;
+    checksum %= 1000;
+    checksum -= 1;
+    printf("total=%lld avg=%f narrowed=%f checksum=%lld\n",
+           total, avg, narrowed.as(f64), checksum);
+    if avg > 0.5 && avg < 1000000.0 {
+        printf("average is in range\n");
+    }
+}
