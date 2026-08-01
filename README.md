@@ -161,8 +161,33 @@ has caught bugs the other hid — the C backend rounds allocas up to a
 while the LLVM printer happily emitted a whole-struct load that only the C
 backend refused.
 
+## stage1: slop in slop
+
+`stage1/` is the compiler being rewritten in its own language. The lexer is
+done:
+
+```bash
+slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
+cc -std=c99 -fno-builtin stage1.c -o stage1-lex
+stage1-lex examples/demo.slop        # same output as: slop --tokens ...
+```
+
+It is held to byte-identical agreement with the C lexer — stdout and stderr
+both — on every `.slop` file in the repository plus `GRAMMAR.md`, which is not
+slop at all and so drives the scanner through bytes no source file contains.
+The list includes `stage1/lexer.slop`, so the lexer lexes its own source.
+`tests/run_stage1.sh` is that check.
+
+What the port had to give up, and what it says about v0: the C lexer leans on
+X-macros, unions, static tables and a preprocessor. slop has none of them, so
+the token kinds are an enum and two functions, `Token` carries its payload
+fields side by side, and nothing crosses a function boundary by value. The
+result is longer and entirely ordinary — which is the answer to whether v0 is
+sufficient.
+
 ## Status
 
 The front end, sema, lowering and both backends work: `examples/demo.slop` is
 563 lines of slop that compiles to a native binary through either path and
-produces identical output. Not done: `slop` is not yet written in slop.
+produces identical output. The lexer is ported to slop and bit-exact with the
+original. Not done: parser, sema and backends in slop.

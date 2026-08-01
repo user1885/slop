@@ -1,0 +1,154 @@
+# stage1/main.slop — dumps a token stream, in the C lexer's exact format.
+#
+# The format is copied deliberately: `slop --tokens f.slop` and
+# `stage1-lex f.slop` must produce byte-identical output on every input, and
+# that diff is the only honest measure of whether the port is correct.
+
+# C's stderr is a macro over a global, and a slop extern block declares
+# functions only, so the stream is opened on the file descriptor instead.
+# It is flushed after every write because this one is buffered where C's
+# stderr is not, and the order diagnostics appear in matters.
+let mut void* g_stderr = null;
+
+fn err() -> void* {
+    if g_stderr == null {
+        g_stderr = fdopen(2, "w");
+    }
+    return g_stderr;
+}
+
+fn read_file(u8* path, i64* out_len) -> u8* {
+    let void* f = fopen(path, "rb");
+    if f == null {
+        fprintf(err(), "stage1: cannot open %s\n", path);
+        fflush(err());
+        return null;
+    }
+
+    fseek(f, 0, 2);          # SEEK_END
+    let i64 size = ftell(f);
+    rewind(f);
+    if size < 0 {
+        fclose(f);
+        return null;
+    }
+
+    let u8* buf = malloc((size + 1).as(u64)).as(u8*);
+    let u64 got = fread(buf.as(void*), 1, size.as(u64), f);
+    fclose(f);
+    buf[got.as(i64)] = 0;
+    *out_len = got.as(i64);
+    return buf;
+}
+
+fn print_escaped(u8* s, i32 len) -> void {
+    let mut i32 i = 0;
+    while i < len {
+        let u8 c = s[i];
+        if c == 10 {
+            printf("\\n");
+        } else {
+            if c == 13 {
+                printf("\\r");
+            } else {
+                if c == 9 {
+                    printf("\\t");
+                } else {
+                    if c == 0 {
+                        printf("\\0");
+                    } else {
+                        if c == 92 {
+                            printf("\\\\");
+                        } else {
+                            if c == 34 {
+                                printf("\\\"");
+                            } else {
+                                if c >= 0x20 && c < 0x7F {
+                                    printf("%c", c.as(i32));
+                                } else {
+                                    printf("\\x%02X", c.as(i32));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+fn dump_token(u8* file, Token* t) -> void {
+    if t.kind == TOK_ERROR.as(i32) {
+        fprintf(err(), "%s:%d:%d: error: %s\n", file, t.line, t.col, t.sval);
+        fflush(err());
+        return;
+    }
+
+    printf("%4d:%-3d %-16s ", t.line, t.col, token_kind_name(t.kind));
+
+    if t.kind == TOK_INT.as(i32) {
+        printf("%.*s  = %llu", t.len, t.text, t.ival);
+    }
+    if t.kind == TOK_FLOAT.as(i32) {
+        printf("%.*s  = %g", t.len, t.text, t.fval);
+    }
+    if t.kind == TOK_CHAR.as(i32) {
+        printf("%.*s  = %llu", t.len, t.text, t.ival);
+    }
+    if t.kind == TOK_STRING.as(i32) {
+        printf("%.*s  = \"", t.len, t.text);
+        print_escaped(t.sval, t.slen);
+        printf("\" (%d bytes)", t.slen);
+    }
+    if t.kind != TOK_INT.as(i32) && t.kind != TOK_FLOAT.as(i32) && t.kind != TOK_CHAR.as(i32)
+        && t.kind != TOK_STRING.as(i32) && t.kind != TOK_EOF.as(i32) {
+        printf("%.*s", t.len, t.text);
+    }
+    printf("\n");
+}
+
+fn lex_file(u8* path) -> i32 {
+    let mut i64 len = 0;
+    let u8* src = read_file(path, &len);
+    if src == null {
+        return 1;
+    }
+
+    let mut Lexer l;
+    lexer_init(&l, path, src, len);
+
+    let mut Token t;
+    let mut i32 count = 0;
+    let mut b8 done = false;
+    while !done {
+        lex_next(&l, &t);
+        dump_token(path, &t);
+        count += 1;
+        if t.kind == TOK_EOF.as(i32) {
+            done = true;
+        }
+    }
+
+    printf("%s: %d tokens, %d error(s)\n", path, count, l.errors);
+    if l.errors != 0 {
+        return 1;
+    }
+    return 0;
+}
+
+fn main(i32 argc, u8** argv) -> i32 {
+    if argc < 2 {
+        fprintf(err(), "usage: stage1-lex <file.slop>...\n");
+        fflush(err());
+        return 2;
+    }
+
+    let mut i32 failed = 0;
+    let mut i32 i = 1;
+    while i < argc {
+        failed |= lex_file(argv[i]);
+        i += 1;
+    }
+    return failed;
+}

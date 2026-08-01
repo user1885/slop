@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # One directory per compiler pass, mirroring the areas in COLLABORATION.md.
 # Includes are spelled from src/ down ("lexer/lexer.h"), so a header says
-# which area it belongs to at every use site.
+# which area it belongs to at every use site..
 add_executable(slop
         src/driver/main.c
         src/driver/source_file.c src/driver/source_file.h
@@ -69,5 +69,10 @@ add_test(NAME end-to-end
 
 # Golden output for each backend from the hand-built module, plus the same
 # compile-and-run check at the level of the IR alone.
+# stage1: the slop lexer compiled by the C compiler, required to agree with
+# the C lexer byte for byte on every file in the repository.
+add_test(NAME stage1
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_stage1.sh $<TARGET_FILE:slop>)
+
 add_test(NAME ir-backends
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_ir.sh $<TARGET_FILE:slop-ir-demo>)
