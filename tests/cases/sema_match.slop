@@ -1,0 +1,23 @@
+# Pins the match rules from GRAMMAR.md section 4 and the enum rules from
+# section 3: a label is a constant, an enum member's value must fit its
+# underlying type, and values are not negative because int_lit carries no
+# sign.
+
+enum Small : u8 { OK = 0, TOO_BIG = 300 }
+
+fn labels(i32 n) -> i64 {
+    let i32 variable = 1;
+    match n {
+        variable => return 1;
+        _ => return 0;
+    }
+}
+
+fn scrutinee(Pair* p) -> i64 {
+    match p {
+        0 => return 1;
+        _ => return 0;
+    }
+}
+
+struct Pair { i32 a; i32 b; }

@@ -330,9 +330,14 @@ Read this before planning, so you do not re-derive it.
   injected into the parser turned two front-end cases red, and deleting a
   terminator made `ir_verify` reject the module. A test suite that has never
   failed has not been tested.
-  **Sema will need cases of its own**: the front-end suite stops at the
-  parser, and nothing in either suite asserts anything about names, types or
-  lvalues.
+  `sema_*` cases run the whole front end over deliberately broken programs
+  and pin the **diagnostics**, which are most of what a compiler is judged
+  on: duplicate and undeclared names, implicit conversions, non-`bN`
+  conditions, structs crossing a function boundary by value, call arity,
+  lvalues, mutability, missing returns, non-constant match labels and enum
+  values that do not fit. Add one here when you add a diagnostic — the
+  message text is the assertion, so rewording one is a deliberate act with a
+  visible diff.
 - **Layout:** sources live in `src/<area>/`, one directory per pass, and
   includes are spelled from `src/` down (`#include "lexer/lexer.h"`).
 - **Build:** CMake, C99, warnings on. `./build/slop <file.slop>` dumps the

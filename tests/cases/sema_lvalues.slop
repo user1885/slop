@@ -1,0 +1,36 @@
+# Pins the checks that need the shape of the tree rather than its type:
+# what may be assigned to, what must be `mut`, and whether every path out of
+# a function returns. GRAMMAR.md section 4 makes the lvalue check sema's job
+# precisely so `a + b = 5` gets a real diagnostic.
+
+struct Pair { i32 a; i32 b; }
+
+fn assignment(i32 a, i32 b, Pair* p) -> void {
+    a + b = 5;
+    5 = a;
+    sizeof(i32) = 4;
+}
+
+fn mutability(Pair* p) -> void {
+    let i32 fixed = 1;
+    fixed = 2;
+    fixed += 1;
+
+    let i32 missing_init;
+}
+
+fn falls_off_the_end() -> i32 {
+    let i32 x = 1;
+}
+
+fn only_one_branch_returns(b8 cond) -> i32 {
+    if cond {
+        return 1;
+    }
+}
+
+fn loop_is_not_a_return(b8 cond) -> i32 {
+    while cond {
+        return 1;
+    }
+}

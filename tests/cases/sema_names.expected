@@ -1,0 +1,13 @@
+sema_names.slop:6:1: error: duplicate declaration of 'duplicate'
+sema_names.slop:5:1: note: first declared here
+sema_names.slop:9:1: error: duplicate declaration of 'g'
+sema_names.slop:8:1: note: first declared here
+sema_names.slop:13:20: error: duplicate declaration of 'RED'
+sema_names.slop:13:15: note: first declared here
+sema_names.slop:11:23: error: duplicate field 'a'
+sema_names.slop:11:16: note: first declared here
+sema_names.slop:16:17: error: undeclared name 'not_declared'
+sema_names.slop:17:5: error: undeclared function 'missing_function'
+sema_names.slop:18:9: error: unknown type 'Nonexistent'
+7 error(s)
+exit: 1

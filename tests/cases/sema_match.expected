@@ -1,0 +1,5 @@
+sema_match.slop:6:27: error: enum value 300 does not fit in u8
+sema_match.slop:11:9: error: 'variable' is not an enum member; a match label must be a constant
+sema_match.slop:17:5: error: match needs an integer or enum value, not Pair*
+3 error(s)
+exit: 1

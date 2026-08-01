@@ -1,0 +1,20 @@
+# Pins the diagnostics for names: undeclared, duplicated, and used before
+# they exist in a scope. Every one of these must be reported, and the run
+# must report all of them rather than stopping at the first.
+
+fn duplicate() -> i32 { return 1; }
+fn duplicate() -> i32 { return 2; }
+
+let i32 g = 0;
+let i32 g = 1;
+
+struct Thing { i32 a; i32 a; }
+
+enum Colors { RED, RED }
+
+fn uses() -> i32 {
+    let i32 a = not_declared;
+    missing_function();
+    let Nonexistent t = null;
+    return a;
+}

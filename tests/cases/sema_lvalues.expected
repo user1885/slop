@@ -1,0 +1,13 @@
+sema_lvalues.slop:9:7: error: cannot assign to this expression
+sema_lvalues.slop:10:5: error: cannot assign to this expression
+sema_lvalues.slop:11:5: error: cannot assign to this expression
+sema_lvalues.slop:16:5: error: 'fixed' is not mutable; declare it with 'let mut'
+sema_lvalues.slop:15:5: note: declared here
+sema_lvalues.slop:17:5: error: 'fixed' is not mutable; declare it with 'let mut'
+sema_lvalues.slop:15:5: note: declared here
+sema_lvalues.slop:19:5: error: 'missing_init' has no initializer, so it must be declared 'let mut'
+sema_lvalues.slop:22:1: error: missing return in 'falls_off_the_end', which returns i32
+sema_lvalues.slop:26:1: error: missing return in 'only_one_branch_returns', which returns i32
+sema_lvalues.slop:32:1: error: missing return in 'loop_is_not_a_return', which returns i32
+9 error(s)
+exit: 1

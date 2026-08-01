@@ -51,13 +51,19 @@ updated=0
 for path in "$cases"/*.slop; do
     name=$(basename "$path" .slop)
 
-    # parse_* pins the parser alone, so it runs with --parse-only: plenty of
-    # slop parses and can never type-check (`f(x)(x)` has no function pointer
-    # to be), so these cases cannot be pushed through sema. Sema needs cases
-    # of its own, which are valid programs.
+    # Each prefix picks how far down the pipeline the case runs.
+    #
+    #   lex_*   stops after the lexer and pins the token stream.
+    #   sema_*  runs the whole front end and pins the *diagnostics*: these
+    #           are deliberately broken programs, and what is being frozen
+    #           is what the compiler says about them.
+    #   parse_* stops after the parser. Plenty of slop parses and can never
+    #           type-check (`f(x)(x)` has no function pointer to be), so
+    #           those cases cannot be pushed through sema.
     args="--parse-only"
     case "$name" in
     lex_*) args="--tokens" ;;
+    sema_*) args="" ;;
     esac
 
     # errexit is inherited by this subshell, and a case that exits nonzero is

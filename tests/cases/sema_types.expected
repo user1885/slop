@@ -1,0 +1,11 @@
+sema_types.slop:7:13: error: struct 'Pair' cannot be passed by value; pass a pointer
+sema_types.slop:8:1: error: struct 'Pair' cannot be returned by value; pass a pointer
+sema_types.slop:12:24: error: cannot convert i64 to i32 implicitly; use '.as(i32)'
+sema_types.slop:13:27: error: cannot convert i32 to u32 implicitly; use '.as(u32)'
+sema_types.slop:15:26: error: cannot convert float literal to i32 implicitly; use '.as(i32)'
+sema_types.slop:17:24: error: cannot convert Pair* to i32 implicitly; use '.as(i32)'
+sema_types.slop:21:8: error: the condition of 'if' must have type b8, b32 or b64, not i32; write 'x != 0'
+sema_types.slop:24:11: error: the condition of 'while' must have type b8, b32 or b64, not Pair*; write 'x != 0'
+sema_types.slop:30:13: error: too many arguments to 'by_value': expected 1, got 2
+9 error(s)
+exit: 1

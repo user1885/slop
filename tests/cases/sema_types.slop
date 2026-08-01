@@ -1,0 +1,31 @@
+# Pins the type rules of GRAMMAR.md section 6: conversions are explicit
+# except for widening within a signedness, conditions are bN and never
+# integers, and structs cannot cross a function boundary by value.
+
+struct Pair { i32 a; i32 b; }
+
+fn by_value(Pair p) -> i32 { return p.a; }
+fn returns_struct() -> Pair { let mut Pair p; return p; }
+
+fn conversions() -> void {
+    let i64 wide = 1;
+    let i32 narrowed = wide;
+    let u32 signedness = 1.as(i32);
+    let f64 f = 1;
+    let i32 from_float = 1.5;
+    let Pair* p = null;
+    let i32 from_ptr = p;
+}
+
+fn conditions(i32 n, Pair* p) -> void {
+    if n {
+        return;
+    }
+    while p {
+        return;
+    }
+}
+
+fn arity() -> void {
+    by_value(1, 2);
+}
