@@ -1,0 +1,944 @@
+# stage1/parser.slop — recursive descent, in slop.
+#
+# Follows GRAMMAR.md sections 2 to 5 exactly, and the C parser's structure
+# closely enough that the two can be compared. Where the C version returns a
+# tagged-union node, this one allocates the specific struct and hands back a
+# pointer to its common header; `.as(T*)` recovers the specific type once the
+# kind has been read.
+#
+# Error handling is deliberately simpler than the C parser's panic-mode
+# recovery: this one reports and stops at the first error. Recovering to the
+# same resynchronisation points, and so producing the same list of
+# diagnostics, is a separate job from parsing correctly, and doing it half
+# way would produce diagnostics that merely resemble the originals.
+
+struct Parser {
+    Token* toks;
+    i32 ntoks;
+    i32 pos;
+    Arena* arena;
+    u8* file;
+    i32 errors;
+}
+
+# The token stream, collected up front. The parser needs lookahead in a few
+# places, which one-token-at-a-time lexing cannot give.
+fn lex_all(Lexer* l, Token** out_toks, i32* out_n) -> void {
+    let mut i32 cap = 256;
+    let mut i32 n = 0;
+    let mut Token* toks = malloc((cap.as(u64)) * sizeof(Token)).as(Token*);
+    let mut b8 done = false;
+
+    while !done {
+        if n == cap {
+            cap *= 2;
+            toks = realloc(toks.as(void*), (cap.as(u64)) * sizeof(Token)).as(Token*);
+        }
+        lex_next(l, &toks[n]);
+        if toks[n].kind == TOK_EOF.as(i32) {
+            done = true;
+        }
+        n += 1;
+    }
+    *out_toks = toks;
+    *out_n = n;
+}
+
+fn cur(Parser* p) -> Token* {
+    return &p.toks[p.pos];
+}
+
+fn cur_kind(Parser* p) -> i32 {
+    return p.toks[p.pos].kind;
+}
+
+fn peek_kind(Parser* p, i32 off) -> i32 {
+    if p.pos + off >= p.ntoks {
+        return TOK_EOF.as(i32);
+    }
+    return p.toks[p.pos + off].kind;
+}
+
+fn at(Parser* p, i32 kind) -> b8 {
+    return cur_kind(p) == kind;
+}
+
+fn advance(Parser* p) -> void {
+    if p.pos + 1 < p.ntoks {
+        p.pos += 1;
+    }
+}
+
+fn parse_error(Parser* p, u8* what) -> void {
+    if p.errors == 0 {
+        let Token* t = cur(p);
+        fprintf(err(), "%s:%d:%d: error: expected %s, found '%s'\n", p.file, t.line, t.col, what,
+                token_kind_name(t.kind));
+        fflush(err());
+    }
+    p.errors += 1;
+}
+
+fn accept(Parser* p, i32 kind) -> b8 {
+    if at(p, kind) {
+        advance(p);
+        return true;
+    }
+    return false;
+}
+
+fn expect(Parser* p, i32 kind, u8* what) -> b8 {
+    if accept(p, kind) {
+        return true;
+    }
+    parse_error(p, what);
+    return false;
+}
+
+fn is_core_type(i32 kind) -> b8 {
+    return kind >= TOK_KW_I8.as(i32) && kind <= TOK_KW_VOID.as(i32);
+}
+
+# ----------------------------------------------------------------- types
+
+fn parse_type(Parser* p) -> Type* {
+    let Token* t = cur(p);
+    let mut Type* base = null;
+
+    if is_core_type(t.kind) {
+        base = type_new(p.arena, TYPE_CORE.as(i32));
+        base.core = t.kind;
+        advance(p);
+    } else {
+        if t.kind == TOK_IDENT.as(i32) {
+            base = type_new(p.arena, TYPE_NAME.as(i32));
+            base.name = t.text;
+            base.name_len = t.len;
+            advance(p);
+        } else {
+            parse_error(p, "a type");
+            return null;
+        }
+    }
+
+    # Suffixes apply left to right: i32*[10] is an array of pointers.
+    let mut b8 more = true;
+    while more {
+        if at(p, TOK_STAR.as(i32)) {
+            advance(p);
+            let Type* ptr = type_new(p.arena, TYPE_POINTER.as(i32));
+            ptr.elem = base;
+            base = ptr;
+        } else {
+            if at(p, TOK_LBRACKET.as(i32)) {
+                advance(p);
+                if !at(p, TOK_INT.as(i32)) {
+                    parse_error(p, "an array length");
+                    return null;
+                }
+                let Type* arr = type_new(p.arena, TYPE_ARRAY.as(i32));
+                arr.elem = base;
+                arr.length = cur(p).ival;
+                advance(p);
+                expect(p, TOK_RBRACKET.as(i32), "']'");
+                base = arr;
+            } else {
+                more = false;
+            }
+        }
+    }
+    return base;
+}
+
+# ------------------------------------------------------------ expressions
+
+fn expr_new(Parser* p, i32 kind, u64 size, Token* t) -> Expr* {
+    let Expr* e = arena_alloc(p.arena, size).as(Expr*);
+    e.kind = kind;
+    e.line = t.line;
+    e.col = t.col;
+    return e;
+}
+
+fn make_binary(Parser* p, i32 op, Token* t, Expr* lhs, Expr* rhs) -> Expr* {
+    let ExprBinary* b = expr_new(p, EXPR_BINARY.as(i32), sizeof(ExprBinary), t).as(ExprBinary*);
+    b.op = op;
+    b.lhs = lhs;
+    b.rhs = rhs;
+    return b.as(Expr*);
+}
+
+fn parse_primary(Parser* p) -> Expr* {
+    let Token* t = cur(p);
+
+    if t.kind == TOK_INT.as(i32) || t.kind == TOK_CHAR.as(i32) {
+        let mut i32 k = EXPR_INT.as(i32);
+        if t.kind == TOK_CHAR.as(i32) {
+            k = EXPR_CHAR.as(i32);
+        }
+        let ExprLit* e = expr_new(p, k, sizeof(ExprLit), t).as(ExprLit*);
+        e.ival = t.ival;
+        advance(p);
+        return e.as(Expr*);
+    }
+    if t.kind == TOK_FLOAT.as(i32) {
+        let ExprLit* e = expr_new(p, EXPR_FLOAT.as(i32), sizeof(ExprLit), t).as(ExprLit*);
+        e.fval = t.fval;
+        advance(p);
+        return e.as(Expr*);
+    }
+    if t.kind == TOK_KW_TRUE.as(i32) || t.kind == TOK_KW_FALSE.as(i32) {
+        let ExprLit* e = expr_new(p, EXPR_BOOL.as(i32), sizeof(ExprLit), t).as(ExprLit*);
+        if t.kind == TOK_KW_TRUE.as(i32) {
+            e.ival = 1;
+        }
+        advance(p);
+        return e.as(Expr*);
+    }
+    if t.kind == TOK_KW_NULL.as(i32) {
+        let Expr* e = expr_new(p, EXPR_NULL.as(i32), sizeof(ExprLit), t);
+        advance(p);
+        return e;
+    }
+    if t.kind == TOK_STRING.as(i32) {
+        let ExprText* e = expr_new(p, EXPR_STRING.as(i32), sizeof(ExprText), t).as(ExprText*);
+        e.text = t.sval;
+        e.len = t.slen;
+        advance(p);
+        return e.as(Expr*);
+    }
+    if t.kind == TOK_IDENT.as(i32) {
+        let ExprText* e = expr_new(p, EXPR_NAME.as(i32), sizeof(ExprText), t).as(ExprText*);
+        e.text = t.text;
+        e.len = t.len;
+        advance(p);
+        return e.as(Expr*);
+    }
+    if t.kind == TOK_LPAREN.as(i32) {
+        advance(p);
+        let Expr* inner = parse_expr(p);
+        expect(p, TOK_RPAREN.as(i32), "')'");
+        return inner;
+    }
+
+    parse_error(p, "an expression");
+    return null;
+}
+
+fn parse_postfix(Parser* p) -> Expr* {
+    let mut Expr* e = parse_primary(p);
+    if e == null {
+        return null;
+    }
+
+    let mut b8 more = true;
+    while more {
+        let Token* t = cur(p);
+        if t.kind == TOK_LPAREN.as(i32) {
+            advance(p);
+            let mut i32 cap = 4;
+            let mut i32 n = 0;
+            let mut Expr** args = malloc((cap.as(u64)) * 8).as(Expr**);
+            if !at(p, TOK_RPAREN.as(i32)) {
+                let mut b8 scanning = true;
+                while scanning {
+                    if n == cap {
+                        cap *= 2;
+                        args = realloc(args.as(void*), (cap.as(u64)) * 8).as(Expr**);
+                    }
+                    args[n] = parse_expr(p);
+                    n += 1;
+                    if !accept(p, TOK_COMMA.as(i32)) {
+                        scanning = false;
+                    }
+                }
+            }
+            expect(p, TOK_RPAREN.as(i32), "')'");
+
+            let ExprCall* c = expr_new(p, EXPR_CALL.as(i32), sizeof(ExprCall), t).as(ExprCall*);
+            c.callee = e;
+            c.nargs = n;
+            c.args = arena_alloc(p.arena, ((n + 1).as(u64)) * 8).as(Expr**);
+            let mut i32 i = 0;
+            while i < n {
+                c.args[i] = args[i];
+                i += 1;
+            }
+            free(args.as(void*));
+            e = c.as(Expr*);
+        } else {
+            if t.kind == TOK_LBRACKET.as(i32) {
+                advance(p);
+                let ExprIndex* x = expr_new(p, EXPR_INDEX.as(i32), sizeof(ExprIndex), t).as(ExprIndex*);
+                x.base = e;
+                x.index = parse_expr(p);
+                expect(p, TOK_RBRACKET.as(i32), "']'");
+                e = x.as(Expr*);
+            } else {
+                if t.kind == TOK_DOT.as(i32) {
+                    advance(p);
+                    # `.as(T)` is a cast; anything else is a field.
+                    if at(p, TOK_KW_AS.as(i32)) {
+                        advance(p);
+                        expect(p, TOK_LPAREN.as(i32), "'('");
+                        let ExprType* c = expr_new(p, EXPR_CAST.as(i32), sizeof(ExprType), t).as(ExprType*);
+                        c.operand = e;
+                        c.type = parse_type(p);
+                        expect(p, TOK_RPAREN.as(i32), "')'");
+                        e = c.as(Expr*);
+                    } else {
+                        if !at(p, TOK_IDENT.as(i32)) {
+                            parse_error(p, "a field name");
+                            return null;
+                        }
+                        let ExprField* f = expr_new(p, EXPR_FIELD.as(i32), sizeof(ExprField), t).as(ExprField*);
+                        f.base = e;
+                        f.name = cur(p).text;
+                        f.name_len = cur(p).len;
+                        advance(p);
+                        e = f.as(Expr*);
+                    }
+                } else {
+                    more = false;
+                }
+            }
+        }
+    }
+    return e;
+}
+
+fn is_unary_op(i32 k) -> b8 {
+    return k == TOK_MINUS.as(i32) || k == TOK_BANG.as(i32) || k == TOK_TILDE.as(i32)
+        || k == TOK_STAR.as(i32) || k == TOK_AMP.as(i32);
+}
+
+fn parse_unary(Parser* p) -> Expr* {
+    let Token* t = cur(p);
+    if is_unary_op(t.kind) {
+        advance(p);
+        let ExprUnary* u = expr_new(p, EXPR_UNARY.as(i32), sizeof(ExprUnary), t).as(ExprUnary*);
+        u.op = t.kind;
+        u.operand = parse_unary(p);
+        return u.as(Expr*);
+    }
+    if t.kind == TOK_KW_SIZEOF.as(i32) {
+        advance(p);
+        expect(p, TOK_LPAREN.as(i32), "'('");
+        let ExprType* s = expr_new(p, EXPR_SIZEOF.as(i32), sizeof(ExprType), t).as(ExprType*);
+        s.type = parse_type(p);
+        expect(p, TOK_RPAREN.as(i32), "')'");
+        return s.as(Expr*);
+    }
+    return parse_postfix(p);
+}
+
+# The ladder, loosest to tightest. Each level is the same shape, which is why
+# the C version is written the same way.
+
+fn parse_mul(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_unary(p);
+    while at(p, TOK_STAR.as(i32)) || at(p, TOK_SLASH.as(i32)) || at(p, TOK_PERCENT.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_unary(p));
+    }
+    return lhs;
+}
+
+fn parse_add(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_mul(p);
+    while at(p, TOK_PLUS.as(i32)) || at(p, TOK_MINUS.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_mul(p));
+    }
+    return lhs;
+}
+
+fn parse_shift(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_add(p);
+    while at(p, TOK_SHL.as(i32)) || at(p, TOK_SHR.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_add(p));
+    }
+    return lhs;
+}
+
+fn parse_bitand(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_shift(p);
+    while at(p, TOK_AMP.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_shift(p));
+    }
+    return lhs;
+}
+
+fn parse_bitxor(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_bitand(p);
+    while at(p, TOK_CARET.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_bitand(p));
+    }
+    return lhs;
+}
+
+fn parse_bitor(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_bitxor(p);
+    while at(p, TOK_PIPE.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_bitxor(p));
+    }
+    return lhs;
+}
+
+# Bitwise binds tighter than comparison: this level sits above them all.
+fn parse_relational(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_bitor(p);
+    while at(p, TOK_LT.as(i32)) || at(p, TOK_LE.as(i32)) || at(p, TOK_GT.as(i32))
+        || at(p, TOK_GE.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_bitor(p));
+    }
+    return lhs;
+}
+
+fn parse_equality(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_relational(p);
+    while at(p, TOK_EQ_EQ.as(i32)) || at(p, TOK_BANG_EQ.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_relational(p));
+    }
+    return lhs;
+}
+
+fn parse_and(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_equality(p);
+    while at(p, TOK_AMP_AMP.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_equality(p));
+    }
+    return lhs;
+}
+
+fn parse_expr(Parser* p) -> Expr* {
+    let mut Expr* lhs = parse_and(p);
+    while at(p, TOK_PIPE_PIPE.as(i32)) {
+        let Token* t = cur(p);
+        advance(p);
+        lhs = make_binary(p, t.kind, t, lhs, parse_and(p));
+    }
+    return lhs;
+}
+
+# ------------------------------------------------------------- statements
+
+fn is_assign_op(i32 k) -> b8 {
+    return k == TOK_EQ.as(i32) || k == TOK_PLUS_EQ.as(i32) || k == TOK_MINUS_EQ.as(i32)
+        || k == TOK_STAR_EQ.as(i32) || k == TOK_SLASH_EQ.as(i32) || k == TOK_PERCENT_EQ.as(i32)
+        || k == TOK_AMP_EQ.as(i32) || k == TOK_PIPE_EQ.as(i32) || k == TOK_CARET_EQ.as(i32)
+        || k == TOK_SHL_EQ.as(i32) || k == TOK_SHR_EQ.as(i32);
+}
+
+# A declaration always starts with `let`, so nothing here needs to know which
+# identifiers name types.
+fn starts_type(Parser* p) -> b8 {
+    return is_core_type(cur_kind(p)) || at(p, TOK_IDENT.as(i32));
+}
+
+fn parse_block(Parser* p) -> Stmt* {
+    let Token* open = cur(p);
+    if !expect(p, TOK_LBRACE.as(i32), "'{'") {
+        return null;
+    }
+
+    let mut i32 cap = 8;
+    let mut i32 n = 0;
+    let mut Stmt** stmts = malloc((cap.as(u64)) * 8).as(Stmt**);
+
+    while !at(p, TOK_RBRACE.as(i32)) && !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+        if n == cap {
+            cap *= 2;
+            stmts = realloc(stmts.as(void*), (cap.as(u64)) * 8).as(Stmt**);
+        }
+        stmts[n] = parse_stmt(p);
+        n += 1;
+    }
+    expect(p, TOK_RBRACE.as(i32), "'}'");
+
+    let StmtBlock* b = expr_new(p, STMT_BLOCK.as(i32), sizeof(StmtBlock), open).as(StmtBlock*);
+    b.nstmts = n;
+    b.stmts = arena_alloc(p.arena, ((n + 1).as(u64)) * 8).as(Stmt**);
+    let mut i32 i = 0;
+    while i < n {
+        b.stmts[i] = stmts[i];
+        i += 1;
+    }
+    free(stmts.as(void*));
+    return b.as(Stmt*);
+}
+
+fn parse_var(Parser* p) -> Stmt* {
+    let Token* t = cur(p);
+    advance(p);                              # let
+    let StmtVar* v = expr_new(p, STMT_VAR.as(i32), sizeof(StmtVar), t).as(StmtVar*);
+    if accept(p, TOK_KW_MUT.as(i32)) {
+        v.is_mut = 1;
+    }
+    v.type = parse_type(p);
+    if !at(p, TOK_IDENT.as(i32)) {
+        parse_error(p, "a variable name");
+        return v.as(Stmt*);
+    }
+    v.name = cur(p).text;
+    v.name_len = cur(p).len;
+    advance(p);
+    if accept(p, TOK_EQ.as(i32)) {
+        v.init = parse_expr(p);
+    }
+    expect(p, TOK_SEMI.as(i32), "';'");
+    return v.as(Stmt*);
+}
+
+fn parse_match(Parser* p) -> Stmt* {
+    let Token* t = cur(p);
+    advance(p);
+    let StmtMatch* m = expr_new(p, STMT_MATCH.as(i32), sizeof(StmtMatch), t).as(StmtMatch*);
+    m.scrutinee = parse_expr(p);
+    expect(p, TOK_LBRACE.as(i32), "'{'");
+
+    let mut i32 cap = 4;
+    let mut i32 n = 0;
+    let mut MatchArm* arms = malloc((cap.as(u64)) * sizeof(MatchArm)).as(MatchArm*);
+
+    while !at(p, TOK_RBRACE.as(i32)) && !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+        if n == cap {
+            cap *= 2;
+            arms = realloc(arms.as(void*), (cap.as(u64)) * sizeof(MatchArm)).as(MatchArm*);
+        }
+
+        let mut i32 lcap = 4;
+        let mut i32 ln = 0;
+        let mut Expr** labels = malloc((lcap.as(u64)) * 8).as(Expr**);
+        let mut b8 scanning = true;
+        while scanning {
+            if ln == lcap {
+                lcap *= 2;
+                labels = realloc(labels.as(void*), (lcap.as(u64)) * 8).as(Expr**);
+            }
+            # `_` is an ordinary identifier everywhere else, so the wildcard
+            # is recognised only here, in label position.
+            if at(p, TOK_IDENT.as(i32)) && cur(p).len == 1 && cur(p).text[0] == '_' {
+                labels[ln] = null;
+                advance(p);
+            } else {
+                labels[ln] = parse_expr(p);
+            }
+            ln += 1;
+            if !accept(p, TOK_COMMA.as(i32)) {
+                scanning = false;
+            }
+        }
+        expect(p, TOK_FAT_ARROW.as(i32), "'=>'");
+
+        arms[n].nlabels = ln;
+        arms[n].labels = arena_alloc(p.arena, ((ln + 1).as(u64)) * 8).as(Expr**);
+        let mut i32 i = 0;
+        while i < ln {
+            arms[n].labels[i] = labels[i];
+            i += 1;
+        }
+        free(labels.as(void*));
+        arms[n].body = parse_stmt(p);
+        n += 1;
+    }
+    expect(p, TOK_RBRACE.as(i32), "'}'");
+
+    m.narms = n;
+    m.arms = arena_alloc(p.arena, ((n + 1).as(u64)) * sizeof(MatchArm)).as(MatchArm*);
+    let mut i32 i = 0;
+    while i < n {
+        m.arms[i].labels = arms[i].labels;
+        m.arms[i].nlabels = arms[i].nlabels;
+        m.arms[i].body = arms[i].body;
+        i += 1;
+    }
+    free(arms.as(void*));
+    return m.as(Stmt*);
+}
+
+fn parse_stmt(Parser* p) -> Stmt* {
+    let Token* t = cur(p);
+
+    if t.kind == TOK_LBRACE.as(i32) {
+        return parse_block(p);
+    }
+    if t.kind == TOK_SEMI.as(i32) {
+        advance(p);
+        return expr_new(p, STMT_EMPTY.as(i32), sizeof(Stmt), t).as(Stmt*);
+    }
+    if t.kind == TOK_KW_LET.as(i32) {
+        return parse_var(p);
+    }
+    if t.kind == TOK_KW_MATCH.as(i32) {
+        return parse_match(p);
+    }
+    if t.kind == TOK_KW_IF.as(i32) {
+        advance(p);
+        let StmtIf* s = expr_new(p, STMT_IF.as(i32), sizeof(StmtIf), t).as(StmtIf*);
+        s.cond = parse_expr(p);
+        s.then_block = parse_block(p);
+        if accept(p, TOK_KW_ELSE.as(i32)) {
+            if at(p, TOK_KW_IF.as(i32)) {
+                s.else_stmt = parse_stmt(p);
+            } else {
+                s.else_stmt = parse_block(p);
+            }
+        }
+        return s.as(Stmt*);
+    }
+    if t.kind == TOK_KW_WHILE.as(i32) {
+        advance(p);
+        let StmtWhile* s = expr_new(p, STMT_WHILE.as(i32), sizeof(StmtWhile), t).as(StmtWhile*);
+        s.cond = parse_expr(p);
+        s.body = parse_block(p);
+        return s.as(Stmt*);
+    }
+    if t.kind == TOK_KW_RETURN.as(i32) {
+        advance(p);
+        let StmtExpr* s = expr_new(p, STMT_RETURN.as(i32), sizeof(StmtExpr), t).as(StmtExpr*);
+        if !at(p, TOK_SEMI.as(i32)) {
+            s.value = parse_expr(p);
+        }
+        expect(p, TOK_SEMI.as(i32), "';'");
+        return s.as(Stmt*);
+    }
+    if t.kind == TOK_KW_BREAK.as(i32) {
+        advance(p);
+        expect(p, TOK_SEMI.as(i32), "';'");
+        return expr_new(p, STMT_BREAK.as(i32), sizeof(Stmt), t).as(Stmt*);
+    }
+    if t.kind == TOK_KW_CONTINUE.as(i32) {
+        advance(p);
+        expect(p, TOK_SEMI.as(i32), "';'");
+        return expr_new(p, STMT_CONTINUE.as(i32), sizeof(Stmt), t).as(Stmt*);
+    }
+
+    # Parse a whole expression, then look at what follows. No backtracking:
+    # if it is an assignment operator the left side was an lvalue, which sema
+    # checks by shape rather than the grammar refusing to parse it.
+    let Expr* lhs = parse_expr(p);
+    if is_assign_op(cur_kind(p)) {
+        let Token* op = cur(p);
+        advance(p);
+        let StmtAssign* s = expr_new(p, STMT_ASSIGN.as(i32), sizeof(StmtAssign), t).as(StmtAssign*);
+        s.target = lhs;
+        s.op = op.kind;
+        s.value = parse_expr(p);
+        expect(p, TOK_SEMI.as(i32), "';'");
+        return s.as(Stmt*);
+    }
+    let StmtExpr* s = expr_new(p, STMT_EXPR.as(i32), sizeof(StmtExpr), t).as(StmtExpr*);
+    s.value = lhs;
+    expect(p, TOK_SEMI.as(i32), "';'");
+    return s.as(Stmt*);
+}
+
+# ------------------------------------------------------------------ items
+
+fn parse_fn(Parser* p, i32 want_body) -> Item* {
+    let Token* t = cur(p);
+    advance(p);                              # fn
+    let ItemFn* f = expr_new(p, ITEM_FN.as(i32), sizeof(ItemFn), t).as(ItemFn*);
+    if !at(p, TOK_IDENT.as(i32)) {
+        parse_error(p, "a function name");
+        return f.as(Item*);
+    }
+    f.name = cur(p).text;
+    f.name_len = cur(p).len;
+    advance(p);
+    expect(p, TOK_LPAREN.as(i32), "'('");
+
+    let mut i32 cap = 4;
+    let mut i32 n = 0;
+    let mut Param* params = malloc((cap.as(u64)) * sizeof(Param)).as(Param*);
+
+    if !at(p, TOK_RPAREN.as(i32)) {
+        let mut b8 scanning = true;
+        while scanning && p.errors == 0 {
+            if at(p, TOK_ELLIPSIS.as(i32)) {
+                advance(p);
+                f.is_variadic = 1;
+                scanning = false;
+            } else {
+                if n == cap {
+                    cap *= 2;
+                    params = realloc(params.as(void*), (cap.as(u64)) * sizeof(Param)).as(Param*);
+                }
+                params[n].is_mut = 0;
+                if accept(p, TOK_KW_MUT.as(i32)) {
+                    params[n].is_mut = 1;
+                }
+                params[n].type = parse_type(p);
+                if at(p, TOK_IDENT.as(i32)) {
+                    params[n].name = cur(p).text;
+                    params[n].name_len = cur(p).len;
+                    advance(p);
+                } else {
+                    parse_error(p, "a parameter name");
+                    scanning = false;
+                }
+                n += 1;
+                if !accept(p, TOK_COMMA.as(i32)) {
+                    scanning = false;
+                }
+            }
+        }
+    }
+    expect(p, TOK_RPAREN.as(i32), "')'");
+
+    f.nparams = n;
+    f.params = arena_alloc(p.arena, ((n + 1).as(u64)) * sizeof(Param)).as(Param*);
+    let mut i32 i = 0;
+    while i < n {
+        f.params[i].is_mut = params[i].is_mut;
+        f.params[i].type = params[i].type;
+        f.params[i].name = params[i].name;
+        f.params[i].name_len = params[i].name_len;
+        i += 1;
+    }
+    free(params.as(void*));
+
+    if accept(p, TOK_ARROW.as(i32)) {
+        f.ret = parse_type(p);
+    } else {
+        # An omitted return type is void, synthesized here so nothing
+        # downstream has to test for its absence.
+        f.ret = type_new(p.arena, TYPE_CORE.as(i32));
+        f.ret.core = TOK_KW_VOID.as(i32);
+    }
+
+    if want_body != 0 {
+        f.has_body = 1;
+        f.body = parse_block(p);
+    } else {
+        expect(p, TOK_SEMI.as(i32), "';'");
+    }
+    return f.as(Item*);
+}
+
+fn parse_item(Parser* p) -> Item* {
+    let Token* t = cur(p);
+
+    if t.kind == TOK_KW_FN.as(i32) {
+        return parse_fn(p, 1);
+    }
+
+    if t.kind == TOK_KW_STRUCT.as(i32) {
+        advance(p);
+        let ItemStruct* s = expr_new(p, ITEM_STRUCT.as(i32), sizeof(ItemStruct), t).as(ItemStruct*);
+        if !at(p, TOK_IDENT.as(i32)) {
+            parse_error(p, "a struct name");
+            return s.as(Item*);
+        }
+        s.name = cur(p).text;
+        s.name_len = cur(p).len;
+        advance(p);
+        expect(p, TOK_LBRACE.as(i32), "'{'");
+
+        let mut i32 cap = 4;
+        let mut i32 n = 0;
+        let mut Field* fields = malloc((cap.as(u64)) * sizeof(Field)).as(Field*);
+        while !at(p, TOK_RBRACE.as(i32)) && !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+            if n == cap {
+                cap *= 2;
+                fields = realloc(fields.as(void*), (cap.as(u64)) * sizeof(Field)).as(Field*);
+            }
+            fields[n].type = parse_type(p);
+            if at(p, TOK_IDENT.as(i32)) {
+                fields[n].name = cur(p).text;
+                fields[n].name_len = cur(p).len;
+                advance(p);
+            } else {
+                parse_error(p, "a field name");
+            }
+            expect(p, TOK_SEMI.as(i32), "';'");
+            n += 1;
+        }
+        expect(p, TOK_RBRACE.as(i32), "'}'");
+
+        s.nfields = n;
+        s.fields = arena_alloc(p.arena, ((n + 1).as(u64)) * sizeof(Field)).as(Field*);
+        let mut i32 i = 0;
+        while i < n {
+            s.fields[i].type = fields[i].type;
+            s.fields[i].name = fields[i].name;
+            s.fields[i].name_len = fields[i].name_len;
+            i += 1;
+        }
+        free(fields.as(void*));
+        return s.as(Item*);
+    }
+
+    if t.kind == TOK_KW_ENUM.as(i32) {
+        advance(p);
+        let ItemEnum* e = expr_new(p, ITEM_ENUM.as(i32), sizeof(ItemEnum), t).as(ItemEnum*);
+        e.base = TOK_KW_I32.as(i32);
+        if !at(p, TOK_IDENT.as(i32)) {
+            parse_error(p, "an enum name");
+            return e.as(Item*);
+        }
+        e.name = cur(p).text;
+        e.name_len = cur(p).len;
+        advance(p);
+        if accept(p, TOK_COLON.as(i32)) {
+            e.base = cur_kind(p);
+            advance(p);
+        }
+        expect(p, TOK_LBRACE.as(i32), "'{'");
+
+        let mut i32 cap = 4;
+        let mut i32 n = 0;
+        let mut EnumMember* members = malloc((cap.as(u64)) * sizeof(EnumMember)).as(EnumMember*);
+        while !at(p, TOK_RBRACE.as(i32)) && !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+            if n == cap {
+                cap *= 2;
+                members = realloc(members.as(void*), (cap.as(u64)) * sizeof(EnumMember)).as(EnumMember*);
+            }
+            if !at(p, TOK_IDENT.as(i32)) {
+                parse_error(p, "an enum member");
+                n = n;
+            }
+            members[n].name = cur(p).text;
+            members[n].name_len = cur(p).len;
+            members[n].has_value = 0;
+            members[n].value = 0;
+            advance(p);
+            if accept(p, TOK_EQ.as(i32)) {
+                if !at(p, TOK_INT.as(i32)) {
+                    parse_error(p, "an integer literal");
+                }
+                members[n].has_value = 1;
+                members[n].value = cur(p).ival;
+                advance(p);
+            }
+            n += 1;
+            if !accept(p, TOK_COMMA.as(i32)) {
+                # A trailing comma is optional, so the list may simply end.
+                if !at(p, TOK_RBRACE.as(i32)) {
+                    parse_error(p, "',' or '}'");
+                }
+            }
+        }
+        expect(p, TOK_RBRACE.as(i32), "'}'");
+
+        e.nmembers = n;
+        e.members = arena_alloc(p.arena, ((n + 1).as(u64)) * sizeof(EnumMember)).as(EnumMember*);
+        let mut i32 i = 0;
+        while i < n {
+            e.members[i].name = members[i].name;
+            e.members[i].name_len = members[i].name_len;
+            e.members[i].has_value = members[i].has_value;
+            e.members[i].value = members[i].value;
+            i += 1;
+        }
+        free(members.as(void*));
+        return e.as(Item*);
+    }
+
+    if t.kind == TOK_KW_LET.as(i32) {
+        advance(p);
+        let ItemGlobal* g = expr_new(p, ITEM_GLOBAL.as(i32), sizeof(ItemGlobal), t).as(ItemGlobal*);
+        if accept(p, TOK_KW_MUT.as(i32)) {
+            g.is_mut = 1;
+        }
+        g.type = parse_type(p);
+        if !at(p, TOK_IDENT.as(i32)) {
+            parse_error(p, "a global name");
+            return g.as(Item*);
+        }
+        g.name = cur(p).text;
+        g.name_len = cur(p).len;
+        advance(p);
+        if accept(p, TOK_EQ.as(i32)) {
+            g.init = parse_expr(p);
+        }
+        expect(p, TOK_SEMI.as(i32), "';'");
+        return g.as(Item*);
+    }
+
+    if t.kind == TOK_KW_EXTERN.as(i32) {
+        advance(p);
+        let ItemExtern* x = expr_new(p, ITEM_EXTERN.as(i32), sizeof(ItemExtern), t).as(ItemExtern*);
+        if !at(p, TOK_STRING.as(i32)) {
+            parse_error(p, "an ABI string");
+            return x.as(Item*);
+        }
+        x.abi = cur(p).sval;
+        x.abi_len = cur(p).slen;
+        advance(p);
+        expect(p, TOK_LBRACE.as(i32), "'{'");
+
+        let mut i32 cap = 4;
+        let mut i32 n = 0;
+        let mut Item** fns = malloc((cap.as(u64)) * 8).as(Item**);
+        while !at(p, TOK_RBRACE.as(i32)) && !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+            if n == cap {
+                cap *= 2;
+                fns = realloc(fns.as(void*), (cap.as(u64)) * 8).as(Item**);
+            }
+            if !at(p, TOK_KW_FN.as(i32)) {
+                parse_error(p, "'fn'");
+                n = n;
+            }
+            fns[n] = parse_fn(p, 0);
+            n += 1;
+        }
+        expect(p, TOK_RBRACE.as(i32), "'}'");
+
+        x.nfns = n;
+        x.fns = arena_alloc(p.arena, ((n + 1).as(u64)) * 8).as(Item**);
+        let mut i32 i = 0;
+        while i < n {
+            x.fns[i] = fns[i];
+            i += 1;
+        }
+        free(fns.as(void*));
+        return x.as(Item*);
+    }
+
+    parse_error(p, "an item");
+    return null;
+}
+
+fn parse_program(Parser* p, Program* out) -> i32 {
+    let mut i32 cap = 16;
+    let mut i32 n = 0;
+    let mut Item** items = malloc((cap.as(u64)) * 8).as(Item**);
+
+    while !at(p, TOK_EOF.as(i32)) && p.errors == 0 {
+        if n == cap {
+            cap *= 2;
+            items = realloc(items.as(void*), (cap.as(u64)) * 8).as(Item**);
+        }
+        items[n] = parse_item(p);
+        n += 1;
+    }
+
+    out.file = p.file;
+    out.nitems = n;
+    out.items = arena_alloc(p.arena, ((n + 1).as(u64)) * 8).as(Item**);
+    let mut i32 i = 0;
+    while i < n {
+        out.items[i] = items[i];
+        i += 1;
+    }
+    free(items.as(void*));
+    return p.errors;
+}

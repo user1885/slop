@@ -1,0 +1,320 @@
+# stage1/ast.slop — the arena and the tree, in slop.
+#
+# C's AST is a tagged union: one Expr struct with a `kind` and a union of
+# payloads. slop has no unions, so this is the common-prefix trick that
+# GRAMMAR.md section 6 exists to make legal — every node starts with the same
+# header, a pointer to any node can be read as a pointer to the header to
+# learn its kind, and `.as(T*)` reinterprets it once the kind is known.
+#
+# That is not a workaround. It is the representation the language was
+# designed around, and the layout guarantee is what makes it defined
+# behaviour rather than a bet on the compiler.
+
+# ------------------------------------------------------------------ arena
+
+struct Arena {
+    u8* base;
+    u64 used;
+    u64 cap;
+    Arena* next;
+}
+
+fn arena_new(u64 cap) -> Arena* {
+    let Arena* a = malloc(sizeof(Arena)).as(Arena*);
+    a.base = malloc(cap).as(u8*);
+    a.used = 0;
+    a.cap = cap;
+    a.next = null;
+    return a;
+}
+
+fn arena_alloc(Arena* a, u64 size) -> void* {
+    let u64 aligned = (size + 7) & ~7;
+    if a.used + aligned > a.cap {
+        # A block of its own for anything that will not fit, so a large
+        # allocation never fails just because the current block is nearly
+        # spent.
+        let u64 grow = 262144;
+        let mut u64 want = grow;
+        if aligned > want {
+            want = aligned;
+        }
+        let Arena* block = arena_new(want);
+        block.next = a.next;
+        a.next = block;
+        let u8* p = block.base;
+        block.used = aligned;
+        return zero_bytes(p, aligned).as(void*);
+    }
+    let u8* p = a.base + a.used;
+    a.used += aligned;
+    return zero_bytes(p, aligned).as(void*);
+}
+
+fn zero_bytes(u8* p, u64 n) -> u8* {
+    let mut u64 i = 0;
+    while i < n {
+        p[i] = 0;
+        i += 1;
+    }
+    return p;
+}
+
+# --------------------------------------------------------------- kinds
+
+enum TypeKind { TYPE_CORE, TYPE_NAME, TYPE_POINTER, TYPE_ARRAY }
+
+enum ExprKind {
+    EXPR_INT,
+    EXPR_FLOAT,
+    EXPR_CHAR,
+    EXPR_STRING,
+    EXPR_BOOL,
+    EXPR_NULL,
+    EXPR_NAME,
+    EXPR_UNARY,
+    EXPR_BINARY,
+    EXPR_CALL,
+    EXPR_INDEX,
+    EXPR_FIELD,
+    EXPR_CAST,
+    EXPR_SIZEOF,
+}
+
+enum StmtKind {
+    STMT_BLOCK,
+    STMT_VAR,
+    STMT_IF,
+    STMT_WHILE,
+    STMT_MATCH,
+    STMT_RETURN,
+    STMT_BREAK,
+    STMT_CONTINUE,
+    STMT_EXPR,
+    STMT_ASSIGN,
+    STMT_EMPTY,
+}
+
+enum ItemKind { ITEM_FN, ITEM_STRUCT, ITEM_ENUM, ITEM_GLOBAL, ITEM_EXTERN }
+
+# ---------------------------------------------------------------- types
+
+# Type is small enough that one struct covers every shape; only the fields
+# the kind names are meaningful.
+struct Type {
+    i32 kind;
+    i32 core;     # TYPE_CORE: the token kind of the keyword
+    u8* name;     # TYPE_NAME
+    i32 name_len;
+    Type* elem;   # TYPE_POINTER, TYPE_ARRAY
+    u64 length;   # TYPE_ARRAY
+}
+
+fn type_new(Arena* a, i32 kind) -> Type* {
+    let Type* t = arena_alloc(a, sizeof(Type)).as(Type*);
+    t.kind = kind;
+    return t;
+}
+
+# ----------------------------------------------------------- expressions
+
+# The header every expression node starts with. A pointer to any of the
+# nodes below may be read as an Expr*, which is how the kind is learned
+# before the node is reinterpreted.
+struct Expr {
+    i32 kind;
+    i32 line;
+    i32 col;
+}
+
+struct ExprLit {      # int, char, bool: ival. float: fval.
+    i32 kind; i32 line; i32 col;
+    u64 ival;
+    f64 fval;
+}
+
+struct ExprText {     # string and name: the bytes
+    i32 kind; i32 line; i32 col;
+    u8* text;
+    i32 len;
+}
+
+struct ExprUnary {
+    i32 kind; i32 line; i32 col;
+    i32 op;
+    Expr* operand;
+}
+
+struct ExprBinary {
+    i32 kind; i32 line; i32 col;
+    i32 op;
+    Expr* lhs;
+    Expr* rhs;
+}
+
+struct ExprCall {
+    i32 kind; i32 line; i32 col;
+    Expr* callee;
+    Expr** args;
+    i32 nargs;
+}
+
+struct ExprIndex {
+    i32 kind; i32 line; i32 col;
+    Expr* base;
+    Expr* index;
+}
+
+struct ExprField {
+    i32 kind; i32 line; i32 col;
+    Expr* base;
+    u8* name;
+    i32 name_len;
+}
+
+struct ExprType {     # cast: operand + type. sizeof: type only.
+    i32 kind; i32 line; i32 col;
+    Expr* operand;
+    Type* type;
+}
+
+# ------------------------------------------------------------ statements
+
+struct Stmt {
+    i32 kind;
+    i32 line;
+    i32 col;
+}
+
+struct StmtBlock {
+    i32 kind; i32 line; i32 col;
+    Stmt** stmts;
+    i32 nstmts;
+}
+
+struct StmtVar {
+    i32 kind; i32 line; i32 col;
+    i32 is_mut;
+    Type* type;
+    u8* name;
+    i32 name_len;
+    Expr* init;
+}
+
+struct StmtIf {
+    i32 kind; i32 line; i32 col;
+    Expr* cond;
+    Stmt* then_block;
+    Stmt* else_stmt;
+}
+
+struct StmtWhile {
+    i32 kind; i32 line; i32 col;
+    Expr* cond;
+    Stmt* body;
+}
+
+struct MatchArm {
+    Expr** labels;      # a null label is the wildcard
+    i32 nlabels;
+    Stmt* body;
+}
+
+struct StmtMatch {
+    i32 kind; i32 line; i32 col;
+    Expr* scrutinee;
+    MatchArm* arms;
+    i32 narms;
+}
+
+struct StmtExpr {      # return, expression statement
+    i32 kind; i32 line; i32 col;
+    Expr* value;
+}
+
+struct StmtAssign {
+    i32 kind; i32 line; i32 col;
+    Expr* target;
+    i32 op;
+    Expr* value;
+}
+
+# ----------------------------------------------------------------- items
+
+struct Param {
+    i32 is_mut;
+    Type* type;
+    u8* name;
+    i32 name_len;
+}
+
+struct Field {
+    Type* type;
+    u8* name;
+    i32 name_len;
+}
+
+struct EnumMember {
+    u8* name;
+    i32 name_len;
+    i32 has_value;
+    u64 value;
+}
+
+struct Item {
+    i32 kind;
+    i32 line;
+    i32 col;
+}
+
+struct ItemFn {
+    i32 kind; i32 line; i32 col;
+    u8* name;
+    i32 name_len;
+    Param* params;
+    i32 nparams;
+    i32 is_variadic;
+    Type* ret;
+    Stmt* body;
+    i32 has_body;
+}
+
+struct ItemStruct {
+    i32 kind; i32 line; i32 col;
+    u8* name;
+    i32 name_len;
+    Field* fields;
+    i32 nfields;
+}
+
+struct ItemEnum {
+    i32 kind; i32 line; i32 col;
+    u8* name;
+    i32 name_len;
+    i32 base;
+    EnumMember* members;
+    i32 nmembers;
+}
+
+struct ItemGlobal {
+    i32 kind; i32 line; i32 col;
+    i32 is_mut;
+    Type* type;
+    u8* name;
+    i32 name_len;
+    Expr* init;
+}
+
+struct ItemExtern {
+    i32 kind; i32 line; i32 col;
+    u8* abi;
+    i32 abi_len;
+    Item** fns;
+    i32 nfns;
+}
+
+struct Program {
+    u8* file;
+    Item** items;
+    i32 nitems;
+}

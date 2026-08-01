@@ -163,8 +163,8 @@ backend refused.
 
 ## stage1: slop in slop
 
-`stage1/` is the compiler being rewritten in its own language. The lexer is
-done:
+`stage1/` is the compiler being rewritten in its own language. The lexer and
+the parser are done:
 
 ```bash
 slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
@@ -178,12 +178,21 @@ slop at all and so drives the scanner through bytes no source file contains.
 The list includes `stage1/lexer.slop`, so the lexer lexes its own source.
 `tests/run_stage1.sh` is that check.
 
+The parser is checked less strictly, because the AST dumper is not ported
+yet and two trees cannot be diffed without one: both parsers must find the
+same number of items in every well-formed file and agree on accept-or-reject
+for every deliberately broken one. Replacing that with a dump comparison is
+the next job.
+
 What the port had to give up, and what it says about v0: the C lexer leans on
-X-macros, unions, static tables and a preprocessor. slop has none of them, so
-the token kinds are an enum and two functions, `Token` carries its payload
-fields side by side, and nothing crosses a function boundary by value. The
-result is longer and entirely ordinary — which is the answer to whether v0 is
-sufficient.
+X-macros, unions, static tables and a preprocessor, and the C AST is a tagged
+union. slop has none of those. The token kinds became an enum and two
+functions, `Token` carries its payload fields side by side, and the AST uses
+the common-prefix trick — every node starts with the same header, and
+`.as(T*)` reinterprets it once the kind has been read. That trick is the
+reason `GRAMMAR.md` makes struct layout a guarantee rather than an
+implementation detail, so the tree is the part of the port the language was
+most deliberately designed for. Nothing needed a language change.
 
 ## Status
 

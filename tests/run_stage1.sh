@@ -38,7 +38,8 @@ passed=0
 failed=0
 
 # ---- build the slop lexer with the C compiler ----------------------------
-if ! "$slop" --backend=c "$root/stage1/lexer.slop" "$root/stage1/main.slop" \
+if ! "$slop" --backend=c "$root/stage1/lexer.slop" "$root/stage1/ast.slop" \
+    "$root/stage1/parser.slop" "$root/stage1/main.slop" \
     > "$work/stage1.c" 2> "$work/emit.log" || [ -s "$work/emit.log" ]; then
     echo "FAIL    stage1 did not compile"
     sed 's/^/        /' "$work/emit.log"
@@ -79,6 +80,47 @@ done
 
 if [ "$failed" -eq 0 ]; then
     echo "ok      stage1 lexer matches the C lexer on $((passed - 1)) files"
+fi
+
+# ---- the parser -----------------------------------------------------------
+# The AST dumper is not ported yet, so the two trees cannot be diffed. What
+# can be compared is the parsers' agreement: the same item count on every
+# well-formed file, and the same accept-or-reject verdict on the deliberately
+# broken ones. That is weaker than the lexer's bit-exactness and is meant to
+# be replaced by a dump comparison once the dumper lands.
+for src in "$root"/examples/*.slop "$root"/stage1/*.slop "$root"/tests/multi/*.slop; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src")
+    c_items=$("$slop" --parse-only "$src" 2>/dev/null | head -1 |
+        sed 's/.*(\([0-9]*\) items).*/\1/')
+    s_items=$("$work/stage1-lex" --parse "$src" 2>/dev/null | sed 's/.*: \([0-9]*\) items.*/\1/')
+    if [ -n "$c_items" ] && [ "$c_items" = "$s_items" ]; then
+        passed=$((passed + 1))
+    else
+        echo "FAIL    $name: item count differs (C $c_items, stage1 $s_items)"
+        failed=$((failed + 1))
+    fi
+done
+
+for src in "$root"/tests/cases/*.slop; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src")
+    set +e
+    "$slop" --parse-only "$src" > /dev/null 2>&1
+    c_status=$?
+    "$work/stage1-lex" --parse "$src" > /dev/null 2>&1
+    s_status=$?
+    set -e
+    if [ "$c_status" -eq "$s_status" ]; then
+        passed=$((passed + 1))
+    else
+        echo "FAIL    $name: parsers disagree on whether this is valid"
+        failed=$((failed + 1))
+    fi
+done
+
+if [ "$failed" -eq 0 ]; then
+    echo "ok      stage1 parser agrees with the C parser on every file"
 fi
 
 printf '%d passed, %d failed\n' "$passed" "$failed"

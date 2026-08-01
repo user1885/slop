@@ -137,6 +137,43 @@ fn lex_file(u8* path) -> i32 {
     return 0;
 }
 
+# Parses a file and reports what it found. Not the AST dump yet: matching
+# the C dumper byte for byte is the next step, and until then the check is
+# that both parsers agree on which files are well formed and on how many
+# items each has.
+fn parse_file(u8* path) -> i32 {
+    let mut i64 len = 0;
+    let u8* src = read_file(path, &len);
+    if src == null {
+        return 1;
+    }
+
+    let mut Lexer l;
+    lexer_init(&l, path, src, len);
+
+    let mut Token* toks = null;
+    let mut i32 ntoks = 0;
+    lex_all(&l, &toks, &ntoks);
+
+    let Arena* arena = arena_new(262144);
+    let mut Parser p;
+    p.toks = toks;
+    p.ntoks = ntoks;
+    p.pos = 0;
+    p.arena = arena;
+    p.file = path;
+    p.errors = 0;
+
+    let mut Program prog;
+    let i32 errors = parse_program(&p, &prog);
+    if errors != 0 {
+        printf("%s: %d parse error(s)\n", path, errors);
+        return 1;
+    }
+    printf("%s: %d items, %d tokens\n", path, prog.nitems, ntoks);
+    return 0;
+}
+
 fn main(i32 argc, u8** argv) -> i32 {
     if argc < 2 {
         fprintf(err(), "usage: stage1-lex <file.slop>...\n");
@@ -145,9 +182,24 @@ fn main(i32 argc, u8** argv) -> i32 {
     }
 
     let mut i32 failed = 0;
+    let mut b8 do_parse = false;
     let mut i32 i = 1;
     while i < argc {
-        failed |= lex_file(argv[i]);
+        if argv[i][0] == '-' {
+            do_parse = true;
+        }
+        i += 1;
+    }
+
+    i = 1;
+    while i < argc {
+        if argv[i][0] != '-' {
+            if do_parse {
+                failed |= parse_file(argv[i]);
+            } else {
+                failed |= lex_file(argv[i]);
+            }
+        }
         i += 1;
     }
     return failed;
