@@ -175,6 +175,52 @@ fn parse_file(u8* path) -> i32 {
     return 0;
 }
 
+# Builds types through the ported universe and prints their layout, so it can
+# be checked against what the C compiler computes for the same declarations.
+# Layout is a language guarantee, so agreement here is not a nicety.
+fn types_check() -> i32 {
+    let Arena* arena = arena_new(65536);
+    let mut TypeTable tt;
+    types_init(&tt, arena);
+
+    let Ty* i32t = ty_core(&tt, TY_I32.as(i32));
+    let Ty* i64t = ty_core(&tt, TY_I64.as(i32));
+    let Ty* u8t = ty_core(&tt, TY_U8.as(i32));
+
+    printf("i32       size=%u align=%u\n", i32t.size, i32t.align);
+    printf("i32*      size=%u align=%u\n", ty_ptr(&tt, i32t).size, ty_ptr(&tt, i32t).align);
+    printf("i32[10]   size=%u align=%u\n", ty_array(&tt, i32t, 10).size,
+           ty_array(&tt, i32t, 10).align);
+    printf("u8[3]     size=%u align=%u\n", ty_array(&tt, u8t, 3).size,
+           ty_array(&tt, u8t, 3).align);
+
+    # Interning: asking twice must give the same object, or `a == b` stops
+    # being type equality.
+    if ty_ptr(&tt, i32t) == ty_ptr(&tt, i32t) {
+        printf("interned  yes\n");
+    } else {
+        printf("interned  NO\n");
+    }
+
+    # struct { u8 a; i64 b; i32 c; } -- padded to 24 with b at 8 and c at 16.
+    let FieldSym* fields = arena_alloc(arena, 3 * sizeof(FieldSym)).as(FieldSym*);
+    fields[0].name = "a";
+    fields[0].name_len = 1;
+    fields[0].type = u8t;
+    fields[1].name = "b";
+    fields[1].name_len = 1;
+    fields[1].type = i64t;
+    fields[2].name = "c";
+    fields[2].name_len = 1;
+    fields[2].type = i32t;
+
+    let Ty* st = ty_struct_new(&tt, "Padded", 6, null);
+    ty_layout_struct(st, fields, 3);
+    printf("Padded    size=%u align=%u a@%u b@%u c@%u\n", st.size, st.align,
+           st.fields[0].offset, st.fields[1].offset, st.fields[2].offset);
+    return 0;
+}
+
 fn main(i32 argc, u8** argv) -> i32 {
     if argc < 2 {
         fprintf(err(), "usage: stage1-lex <file.slop>...\n");
@@ -184,12 +230,21 @@ fn main(i32 argc, u8** argv) -> i32 {
 
     let mut i32 failed = 0;
     let mut b8 do_parse = false;
+    let mut b8 do_types = false;
     let mut i32 i = 1;
     while i < argc {
         if argv[i][0] == '-' {
-            do_parse = true;
+            if argv[i][2] == 't' {
+                do_types = true;
+            } else {
+                do_parse = true;
+            }
         }
         i += 1;
+    }
+
+    if do_types {
+        return types_check();
     }
 
     i = 1;

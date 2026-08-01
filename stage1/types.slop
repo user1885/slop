@@ -1,0 +1,373 @@
+# stage1/types.slop — the resolved type universe, in slop.
+#
+# The AST's Type is syntax: a name that has not been looked up and a shape
+# with no size. This is the parallel, resolved universe sema works in, and it
+# is deliberately a different struct so the two cannot be confused.
+#
+# Types are interned: one Ty per distinct type, so `a == b` *is* type
+# equality and there is no ty_equal to get wrong. The core types are
+# singletons made at startup; pointers and arrays are looked up by their
+# shape; structs and enums are one per declaration.
+#
+# Layout follows GRAMMAR.md section 6, which makes it a language guarantee
+# rather than an implementation detail: fields in declaration order, C
+# alignment, no reordering. The common-prefix trick in the AST depends on it,
+# so this is one of the few places where getting it merely "reasonable" would
+# be wrong.
+
+enum TyKind {
+    TY_VOID,
+    TY_I8,
+    TY_U8,
+    TY_I32,
+    TY_U32,
+    TY_I64,
+    TY_U64,
+    TY_F32,
+    TY_F64,
+    TY_B8,
+    TY_B32,
+    TY_B64,
+    TY_PTR,
+    TY_ARRAY,
+    TY_STRUCT,
+    TY_ENUM,
+    TY_UNTYPED_INT,
+    TY_UNTYPED_FLOAT,
+    TY_UNTYPED_BOOL,
+    TY_NULL,
+    TY_POISON,
+    TY_COUNT,
+}
+
+enum LayoutState { LAYOUT_UNSTARTED, LAYOUT_IN_PROGRESS, LAYOUT_DONE }
+
+struct FieldSym {
+    u8* name;
+    i32 name_len;
+    Ty* type;
+    u32 offset;
+}
+
+struct EnumSym {
+    u8* name;
+    i32 name_len;
+    u64 value;
+}
+
+struct Ty {
+    i32 kind;
+    u32 size;
+    u32 align;
+
+    Ty* elem;       # TY_PTR, TY_ARRAY
+    u64 length;     # TY_ARRAY
+
+    u8* name;       # TY_STRUCT, TY_ENUM
+    i32 name_len;
+
+    FieldSym* fields;
+    i32 nfields;
+    i32 state;
+    Item* decl;     # TY_STRUCT: where the fields are
+
+    EnumSym* members;
+    i32 nmembers;
+    Ty* base;       # TY_ENUM: the underlying core type
+}
+
+# Owns the interned types. One per compilation.
+struct TypeTable {
+    Arena* arena;
+    Ty** core;      # the singletons, indexed by kind
+    Ty** derived;   # pointers, arrays, structs and enums
+    i32 nderived;
+    i32 cderived;
+}
+
+fn ty_new(TypeTable* tt, i32 kind) -> Ty* {
+    let Ty* t = arena_alloc(tt.arena, sizeof(Ty)).as(Ty*);
+    t.kind = kind;
+    t.align = 1;
+    return t;
+}
+
+fn tt_push(TypeTable* tt, Ty* t) -> void {
+    if tt.nderived == tt.cderived {
+        let i32 grow = tt.cderived * 2;
+        let mut i32 want = grow;
+        if want < 16 {
+            want = 16;
+        }
+        let Ty** bigger = arena_alloc(tt.arena, (want.as(u64)) * 8).as(Ty**);
+        let mut i32 i = 0;
+        while i < tt.nderived {
+            bigger[i] = tt.derived[i];
+            i += 1;
+        }
+        tt.derived = bigger;
+        tt.cderived = want;
+    }
+    tt.derived[tt.nderived] = t;
+    tt.nderived += 1;
+}
+
+# Pointers are 8 bytes because the only target in sight is x86-64. Nothing
+# outside this file writes that number, so it becomes a target property the
+# day it stops being true.
+fn core_size(i32 kind) -> u32 {
+    match kind {
+        TY_I8 => return 1;
+        TY_U8 => return 1;
+        TY_B8 => return 1;
+        TY_I32 => return 4;
+        TY_U32 => return 4;
+        TY_F32 => return 4;
+        TY_B32 => return 4;
+        TY_I64 => return 8;
+        TY_U64 => return 8;
+        TY_F64 => return 8;
+        TY_B64 => return 8;
+        _ => return 0;
+    }
+}
+
+fn types_init(TypeTable* tt, Arena* arena) -> void {
+    tt.arena = arena;
+    tt.nderived = 0;
+    tt.cderived = 0;
+    tt.derived = null;
+    tt.core = arena_alloc(arena, (TY_COUNT.as(u64)) * 8).as(Ty**);
+
+    let mut i32 k = 0;
+    while k < TY_COUNT.as(i32) {
+        # Only the core kinds get a singleton here; the rest are made on
+        # demand and stay null.
+        if k <= TY_B64.as(i32) || k >= TY_UNTYPED_INT.as(i32) {
+            let Ty* t = ty_new(tt, k);
+            t.size = core_size(k);
+            if t.size != 0 {
+                t.align = t.size;
+            }
+            if k == TY_NULL.as(i32) {
+                t.size = 8;
+                t.align = 8;
+            }
+            tt.core[k] = t;
+        } else {
+            tt.core[k] = null;
+        }
+        k += 1;
+    }
+}
+
+fn ty_core(TypeTable* tt, i32 kind) -> Ty* {
+    return tt.core[kind];
+}
+
+# The token keyword a core type was spelled with, mapped to its kind.
+fn ty_from_token(TypeTable* tt, i32 tok) -> Ty* {
+    match tok {
+        TOK_KW_VOID => return ty_core(tt, TY_VOID.as(i32));
+        TOK_KW_I8 => return ty_core(tt, TY_I8.as(i32));
+        TOK_KW_U8 => return ty_core(tt, TY_U8.as(i32));
+        TOK_KW_I32 => return ty_core(tt, TY_I32.as(i32));
+        TOK_KW_U32 => return ty_core(tt, TY_U32.as(i32));
+        TOK_KW_I64 => return ty_core(tt, TY_I64.as(i32));
+        TOK_KW_U64 => return ty_core(tt, TY_U64.as(i32));
+        TOK_KW_F32 => return ty_core(tt, TY_F32.as(i32));
+        TOK_KW_F64 => return ty_core(tt, TY_F64.as(i32));
+        TOK_KW_B8 => return ty_core(tt, TY_B8.as(i32));
+        TOK_KW_B32 => return ty_core(tt, TY_B32.as(i32));
+        TOK_KW_B64 => return ty_core(tt, TY_B64.as(i32));
+        _ => return ty_core(tt, TY_POISON.as(i32));
+    }
+}
+
+# Interning: a pointer to the same element is the same type, so the table is
+# searched before anything is made.
+fn ty_ptr(TypeTable* tt, Ty* elem) -> Ty* {
+    let mut i32 i = 0;
+    while i < tt.nderived {
+        let Ty* t = tt.derived[i];
+        if t.kind == TY_PTR.as(i32) && t.elem == elem {
+            return t;
+        }
+        i += 1;
+    }
+    let Ty* t = ty_new(tt, TY_PTR.as(i32));
+    t.elem = elem;
+    t.size = 8;
+    t.align = 8;
+    tt_push(tt, t);
+    return t;
+}
+
+fn ty_array(TypeTable* tt, Ty* elem, u64 length) -> Ty* {
+    let mut i32 i = 0;
+    while i < tt.nderived {
+        let Ty* t = tt.derived[i];
+        if t.kind == TY_ARRAY.as(i32) && t.elem == elem && t.length == length {
+            return t;
+        }
+        i += 1;
+    }
+    let Ty* t = ty_new(tt, TY_ARRAY.as(i32));
+    t.elem = elem;
+    t.length = length;
+    t.size = (length * elem.size.as(u64)).as(u32);
+    t.align = elem.align;
+    tt_push(tt, t);
+    return t;
+}
+
+# Structs and enums are one per declaration rather than per shape: two
+# structs with the same fields are still different types.
+fn ty_struct_new(TypeTable* tt, u8* name, i32 name_len, Item* decl) -> Ty* {
+    let Ty* t = ty_new(tt, TY_STRUCT.as(i32));
+    t.name = name;
+    t.name_len = name_len;
+    t.decl = decl;
+    t.state = LAYOUT_UNSTARTED.as(i32);
+    tt_push(tt, t);
+    return t;
+}
+
+fn ty_enum_new(TypeTable* tt, u8* name, i32 name_len, Ty* base) -> Ty* {
+    let Ty* t = ty_new(tt, TY_ENUM.as(i32));
+    t.name = name;
+    t.name_len = name_len;
+    t.base = base;
+    t.size = base.size;
+    t.align = base.align;
+    tt_push(tt, t);
+    return t;
+}
+
+fn align_up(u32 n, u32 align) -> u32 {
+    return (n + align - 1) & ~(align - 1);
+}
+
+# Fields in declaration order at aligned offsets, the total rounded up to the
+# struct's own alignment. This is the guarantee, not a choice.
+fn ty_layout_struct(Ty* t, FieldSym* fields, i32 nfields) -> void {
+    let mut u32 offset = 0;
+    let mut u32 align = 1;
+    let mut i32 i = 0;
+
+    while i < nfields {
+        let u32 fa = fields[i].type.align;
+        if fa > align {
+            align = fa;
+        }
+        offset = align_up(offset, fa);
+        fields[i].offset = offset;
+        offset += fields[i].type.size;
+        i += 1;
+    }
+
+    t.fields = fields;
+    t.nfields = nfields;
+    t.align = align;
+    t.size = align_up(offset, align);
+    t.state = LAYOUT_DONE.as(i32);
+}
+
+fn ty_field(Ty* t, u8* name, i32 len) -> FieldSym* {
+    let mut i32 i = 0;
+    while i < t.nfields {
+        if t.fields[i].name_len == len && name_is(t.fields[i].name, len, name) {
+            return &t.fields[i];
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn ty_is_integer(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    return (t.kind >= TY_I8.as(i32) && t.kind <= TY_U64.as(i32))
+        || t.kind == TY_UNTYPED_INT.as(i32) || t.kind == TY_ENUM.as(i32);
+}
+
+fn ty_is_signed(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    if t.kind == TY_ENUM.as(i32) {
+        return ty_is_signed(t.base);
+    }
+    return t.kind == TY_I8.as(i32) || t.kind == TY_I32.as(i32) || t.kind == TY_I64.as(i32)
+        || t.kind == TY_UNTYPED_INT.as(i32);
+}
+
+fn ty_is_float(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    return t.kind == TY_F32.as(i32) || t.kind == TY_F64.as(i32)
+        || t.kind == TY_UNTYPED_FLOAT.as(i32);
+}
+
+fn ty_is_bool(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    return t.kind == TY_B8.as(i32) || t.kind == TY_B32.as(i32) || t.kind == TY_B64.as(i32)
+        || t.kind == TY_UNTYPED_BOOL.as(i32);
+}
+
+fn ty_is_untyped(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    return t.kind == TY_UNTYPED_INT.as(i32) || t.kind == TY_UNTYPED_FLOAT.as(i32)
+        || t.kind == TY_UNTYPED_BOOL.as(i32) || t.kind == TY_NULL.as(i32);
+}
+
+fn ty_is_sized(Ty* t) -> b8 {
+    if t == null {
+        return false;
+    }
+    return t.kind != TY_VOID.as(i32) && t.kind != TY_POISON.as(i32);
+}
+
+# Renders in source syntax, so a diagnostic can name a type the way it was
+# written: i32*[10], Arena*.
+fn ty_print(Ty* t) -> void {
+    if t == null {
+        printf("<error-type>");
+        return;
+    }
+    match t.kind {
+        TY_VOID => printf("void");
+        TY_I8 => printf("i8");
+        TY_U8 => printf("u8");
+        TY_I32 => printf("i32");
+        TY_U32 => printf("u32");
+        TY_I64 => printf("i64");
+        TY_U64 => printf("u64");
+        TY_F32 => printf("f32");
+        TY_F64 => printf("f64");
+        TY_B8 => printf("b8");
+        TY_B32 => printf("b32");
+        TY_B64 => printf("b64");
+        TY_PTR => {
+            ty_print(t.elem);
+            printf("*");
+        }
+        TY_ARRAY => {
+            ty_print(t.elem);
+            printf("[%llu]", t.length);
+        }
+        TY_STRUCT => print_name(t.name, t.name_len);
+        TY_ENUM => print_name(t.name, t.name_len);
+        TY_UNTYPED_INT => printf("integer literal");
+        TY_UNTYPED_FLOAT => printf("float literal");
+        TY_UNTYPED_BOOL => printf("bool");
+        TY_NULL => printf("null");
+        _ => printf("<error-type>");
+    }
+}

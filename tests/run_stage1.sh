@@ -39,7 +39,8 @@ failed=0
 
 # ---- build the slop lexer with the C compiler ----------------------------
 if ! "$slop" --backend=c "$root/stage1/lexer.slop" "$root/stage1/ast.slop" \
-    "$root/stage1/parser.slop" "$root/stage1/dump.slop" "$root/stage1/main.slop" \
+    "$root/stage1/types.slop" "$root/stage1/parser.slop" "$root/stage1/dump.slop" \
+    "$root/stage1/main.slop" \
     > "$work/stage1.c" 2> "$work/emit.log" || [ -s "$work/emit.log" ]; then
     echo "FAIL    stage1 did not compile"
     sed 's/^/        /' "$work/emit.log"
@@ -107,6 +108,30 @@ done
 
 if [ "$failed" -eq 0 ]; then
     echo "ok      stage1 parser builds trees identical to the C parser"
+fi
+
+# ---- the type universe ----------------------------------------------------
+# Layout is a guarantee in GRAMMAR.md section 6, not an implementation
+# detail, so the ported type table has to compute exactly what the C
+# compiler does. These are the numbers the C compiler's own sizeof gives for
+# the same declarations.
+cat > "$work/types.want" <<'WANT'
+i32       size=4 align=4
+i32*      size=8 align=8
+i32[10]   size=40 align=4
+u8[3]     size=3 align=1
+interned  yes
+Padded    size=24 align=8 a@0 b@8 c@16
+WANT
+
+if "$work/stage1-lex" --types > "$work/types.got" 2>&1 &&
+    diff -u "$work/types.want" "$work/types.got" > "$work/types.diff"; then
+    echo "ok      stage1 type layout matches the C compiler"
+    passed=$((passed + 1))
+else
+    echo "FAIL    stage1 type layout differs"
+    sed 's/^/        /' "$work/types.diff"
+    failed=$((failed + 1))
 fi
 
 printf '%d passed, %d failed\n' "$passed" "$failed"

@@ -163,8 +163,9 @@ backend refused.
 
 ## stage1: slop in slop
 
-`stage1/` is the compiler being rewritten in its own language. The lexer,
-the parser and the AST dumper are done:
+`stage1/` is the compiler being rewritten in its own language. The lexer, the
+parser, the AST dumper and sema's type universe are done; the rest of sema,
+the IR and the backends are not:
 
 ```bash
 slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
@@ -183,6 +184,12 @@ too, so the two trees are diffed directly. Nineteen files produce
 byte-identical dumps, `stage1/` included, which means the slop parser parses
 and prints its own source exactly as the C one does. Item counts would not
 notice a mis-parsed expression inside a function body; a tree diff does.
+
+The type universe (`stage1/types.slop`) is checked against the C compiler's
+own `sizeof`: interning holds, and `i32`, `i32*`, `i32[10]`, `u8[3]` and a
+padded struct all lay out identically. That matters more than it looks —
+GRAMMAR.md makes layout a guarantee because the AST's common-prefix trick
+depends on it, so a disagreement here would break the tree, not just a size.
 
 Error *recovery* is not ported. The C parser resynchronises at statement,
 member and item boundaries to report many errors per run; stage1 reports the
