@@ -167,10 +167,11 @@ fn parse_file(u8* path) -> i32 {
     let mut Program prog;
     let i32 errors = parse_program(&p, &prog);
     if errors != 0 {
-        printf("%s: %d parse error(s)\n", path, errors);
+        fprintf(err(), "%d error(s)\n", errors);
+        fflush(err());
         return 1;
     }
-    printf("%s: %d items, %d tokens\n", path, prog.nitems, ntoks);
+    ast_dump(&prog);
     return 0;
 }
 

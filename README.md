@@ -163,8 +163,8 @@ backend refused.
 
 ## stage1: slop in slop
 
-`stage1/` is the compiler being rewritten in its own language. The lexer and
-the parser are done:
+`stage1/` is the compiler being rewritten in its own language. The lexer,
+the parser and the AST dumper are done:
 
 ```bash
 slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
@@ -178,11 +178,16 @@ slop at all and so drives the scanner through bytes no source file contains.
 The list includes `stage1/lexer.slop`, so the lexer lexes its own source.
 `tests/run_stage1.sh` is that check.
 
-The parser is checked less strictly, because the AST dumper is not ported
-yet and two trees cannot be diffed without one: both parsers must find the
-same number of items in every well-formed file and agree on accept-or-reject
-for every deliberately broken one. Replacing that with a dump comparison is
-the next job.
+The parser is held to the same standard as the lexer: the dumper is ported
+too, so the two trees are diffed directly. Nineteen files produce
+byte-identical dumps, `stage1/` included, which means the slop parser parses
+and prints its own source exactly as the C one does. Item counts would not
+notice a mis-parsed expression inside a function body; a tree diff does.
+
+Error *recovery* is not ported. The C parser resynchronises at statement,
+member and item boundaries to report many errors per run; stage1 reports the
+first and stops. Both reject the same files, but they do not print the same
+list of diagnostics.
 
 What the port had to give up, and what it says about v0: the C lexer leans on
 X-macros, unions, static tables and a preprocessor, and the C AST is a tagged
