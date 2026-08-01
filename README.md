@@ -164,8 +164,9 @@ backend refused.
 ## stage1: slop in slop
 
 `stage1/` is the compiler being rewritten in its own language. The front end
-is done — lexer, parser, AST dumper, and sema's three passes. The IR, lowering
-and the backends are not:
+is done — lexer, parser, AST dumper, sema's three passes — and so are the IR
+and a C backend. Lowering from the AST to the IR is the piece still missing,
+which is why the two halves cannot yet be joined:
 
 ```bash
 slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
@@ -200,6 +201,12 @@ version does, because stage1 has no backend to consume them yet.
 together — the slop lexer, parser and sema accepting the slop they are
 written in, with names resolved across files. That is the milestone the
 language exists for, and it is a test rather than a claim.
+
+The IR and the C backend are checked the way they were on the C side, before
+lowering existed: stage1 builds a module by hand, emits C from it, and that C
+is compiled and run. It must exit 36, the same module and the same number the
+C implementation's `ir_demo` uses, so the two backends are directly
+comparable.
 
 Error *recovery* is not ported. The C parser resynchronises at statement,
 member and item boundaries to report many errors per run; stage1 reports the

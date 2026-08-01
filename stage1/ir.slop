@@ -1,0 +1,525 @@
+# stage1/ir.slop — the IR and the C backend, in slop.
+#
+# The same model as the C implementation: an in-memory LLVM IR with no phi
+# nodes (every local is an alloca) and an explicit name on every value. The
+# C backend prints it as C99, addressing everything by byte offset so nothing
+# depends on the host compiler's layout.
+#
+# Lowering from the AST is not here. On the C side the IR and the backends
+# were written and tested before lowering existed, driven by a module built
+# by hand, and this follows that order for the same reason: a backend can be
+# checked by compiling and running what it emits, which needs no front end.
+
+enum IrTypeKind { IRT_VOID, IRT_INT, IRT_FLOAT, IRT_PTR, IRT_ARRAY, IRT_STRUCT }
+
+struct IrType {
+    i32 kind;
+    u32 bits;        # IRT_INT, IRT_FLOAT
+    IrType* elem;    # IRT_ARRAY
+    u64 length;
+    u8* name;        # IRT_STRUCT
+}
+
+enum IrValueKind { IRV_CONST_INT, IRV_LOCAL, IRV_GLOBAL, IRV_FUNC }
+
+struct IrValue {
+    i32 kind;
+    IrType* type;
+    u64 ival;
+    u8* name;
+}
+
+enum IrOp {
+    IR_ALLOCA,
+    IR_LOAD,
+    IR_STORE,
+    IR_GEP,
+    IR_ADD,
+    IR_SUB,
+    IR_MUL,
+    IR_SDIV,
+    IR_ICMP_LT,
+    IR_ICMP_EQ,
+    IR_CALL,
+    IR_RET,
+    IR_BR,
+    IR_CONDBR,
+}
+
+struct IrInstr {
+    i32 op;
+    IrValue* result;
+    IrValue* a;
+    IrValue* b;
+    IrType* type_arg;
+    IrBlock* dest;
+    IrBlock* dest2;
+    IrFunction* callee;
+    IrValue** args;
+    i32 nargs;
+    IrInstr* next;
+}
+
+struct IrBlock {
+    u8* name;
+    IrInstr* first;
+    IrInstr* last;
+    IrBlock* next;
+}
+
+struct IrFunction {
+    u8* name;
+    IrType* ret;
+    IrValue** params;
+    i32 nparams;
+    i32 is_declaration;
+    i32 is_vararg;
+    IrBlock* first;
+    IrBlock* last;
+    i32 next_temp;
+    IrFunction* next;
+}
+
+struct IrModule {
+    Arena* arena;
+    u8* name;
+    IrFunction* functions;
+    IrFunction* last_function;
+    IrType* ty_void;
+    IrType* ty_i32;
+    IrType* ty_i64;
+    IrType* ty_ptr;
+}
+
+struct IrBuilder {
+    IrModule* m;
+    IrFunction* func;
+    IrBlock* block;
+}
+
+fn irtype_new(IrModule* m, i32 kind, u32 bits) -> IrType* {
+    let IrType* t = arena_alloc(m.arena, sizeof(IrType)).as(IrType*);
+    t.kind = kind;
+    t.bits = bits;
+    return t;
+}
+
+fn ir_module_new(Arena* arena, u8* name) -> IrModule* {
+    let IrModule* m = arena_alloc(arena, sizeof(IrModule)).as(IrModule*);
+    m.arena = arena;
+    m.name = name;
+    m.ty_void = irtype_new(m, IRT_VOID.as(i32), 0);
+    m.ty_i32 = irtype_new(m, IRT_INT.as(i32), 32);
+    m.ty_i64 = irtype_new(m, IRT_INT.as(i32), 64);
+    m.ty_ptr = irtype_new(m, IRT_PTR.as(i32), 0);
+    return m;
+}
+
+fn ir_const_int(IrModule* m, IrType* t, u64 v) -> IrValue* {
+    let IrValue* val = arena_alloc(m.arena, sizeof(IrValue)).as(IrValue*);
+    val.kind = IRV_CONST_INT.as(i32);
+    val.type = t;
+    val.ival = v;
+    return val;
+}
+
+# Names are formed here rather than numbered at print time, for the same
+# reason as the C version: implicit numbering couples the printer to
+# traversal order and cannot be checked locally.
+fn ir_temp_name(IrModule* m, i32 n) -> u8* {
+    let u8* buf = arena_alloc(m.arena, 24).as(u8*);
+    snprintf(buf, 24, "t%d", n);
+    return buf;
+}
+
+fn ir_function_new(IrModule* m, u8* name, IrType* ret, IrType** ptypes, i32 nparams,
+                   i32 is_decl) -> IrFunction* {
+    let IrFunction* f = arena_alloc(m.arena, sizeof(IrFunction)).as(IrFunction*);
+    f.name = name;
+    f.ret = ret;
+    f.nparams = nparams;
+    f.is_declaration = is_decl;
+    f.params = arena_alloc(m.arena, ((nparams + 1).as(u64)) * 8).as(IrValue**);
+
+    let mut i32 i = 0;
+    while i < nparams {
+        let IrValue* p = arena_alloc(m.arena, sizeof(IrValue)).as(IrValue*);
+        p.kind = IRV_LOCAL.as(i32);
+        p.type = ptypes[i];
+        let u8* buf = arena_alloc(m.arena, 24).as(u8*);
+        snprintf(buf, 24, "arg%d", i);
+        p.name = buf;
+        f.params[i] = p;
+        i += 1;
+    }
+
+    if m.last_function == null {
+        m.functions = f;
+    } else {
+        m.last_function.next = f;
+    }
+    m.last_function = f;
+    return f;
+}
+
+fn ir_block_new(IrModule* m, IrFunction* f, u8* name) -> IrBlock* {
+    let IrBlock* b = arena_alloc(m.arena, sizeof(IrBlock)).as(IrBlock*);
+    b.name = name;
+    if f.last == null {
+        f.first = b;
+    } else {
+        f.last.next = b;
+    }
+    f.last = b;
+    return b;
+}
+
+fn ir_emit(IrBuilder* bl, i32 op, IrType* result_type) -> IrInstr* {
+    let IrInstr* in = arena_alloc(bl.m.arena, sizeof(IrInstr)).as(IrInstr*);
+    in.op = op;
+    if result_type != null && result_type.kind != IRT_VOID.as(i32) {
+        let IrValue* r = arena_alloc(bl.m.arena, sizeof(IrValue)).as(IrValue*);
+        r.kind = IRV_LOCAL.as(i32);
+        r.type = result_type;
+        r.name = ir_temp_name(bl.m, bl.func.next_temp);
+        bl.func.next_temp += 1;
+        in.result = r;
+    }
+    if bl.block.last == null {
+        bl.block.first = in;
+    } else {
+        bl.block.last.next = in;
+    }
+    bl.block.last = in;
+    return in;
+}
+
+fn ir_alloca(IrBuilder* bl, IrType* t) -> IrValue* {
+    let IrInstr* in = ir_emit(bl, IR_ALLOCA.as(i32), bl.m.ty_ptr);
+    in.type_arg = t;
+    return in.result;
+}
+
+fn ir_load(IrBuilder* bl, IrType* t, IrValue* ptr) -> IrValue* {
+    let IrInstr* in = ir_emit(bl, IR_LOAD.as(i32), t);
+    in.a = ptr;
+    in.type_arg = t;
+    return in.result;
+}
+
+fn ir_store(IrBuilder* bl, IrValue* v, IrValue* ptr) -> void {
+    let IrInstr* in = ir_emit(bl, IR_STORE.as(i32), null);
+    in.a = v;
+    in.b = ptr;
+    in.type_arg = v.type;
+}
+
+fn ir_binary(IrBuilder* bl, i32 op, IrValue* a, IrValue* b) -> IrValue* {
+    let IrInstr* in = ir_emit(bl, op, a.type);
+    in.a = a;
+    in.b = b;
+    return in.result;
+}
+
+fn ir_cmp(IrBuilder* bl, i32 op, IrValue* a, IrValue* b) -> IrValue* {
+    let IrInstr* in = ir_emit(bl, op, bl.m.ty_i32);
+    in.a = a;
+    in.b = b;
+    return in.result;
+}
+
+fn ir_call(IrBuilder* bl, IrFunction* callee, IrValue** args, i32 nargs) -> IrValue* {
+    let IrInstr* in = ir_emit(bl, IR_CALL.as(i32), callee.ret);
+    in.callee = callee;
+    in.args = args;
+    in.nargs = nargs;
+    return in.result;
+}
+
+fn ir_ret(IrBuilder* bl, IrValue* v) -> void {
+    let IrInstr* in = ir_emit(bl, IR_RET.as(i32), null);
+    in.a = v;
+}
+
+fn ir_br(IrBuilder* bl, IrBlock* dest) -> void {
+    let IrInstr* in = ir_emit(bl, IR_BR.as(i32), null);
+    in.dest = dest;
+}
+
+fn ir_condbr(IrBuilder* bl, IrValue* cond, IrBlock* t, IrBlock* f) -> void {
+    let IrInstr* in = ir_emit(bl, IR_CONDBR.as(i32), null);
+    in.a = cond;
+    in.dest = t;
+    in.dest2 = f;
+}
+
+# ------------------------------------------------------------- C backend
+
+fn c_type(IrType* t) -> u8* {
+    if t == null {
+        return "void";
+    }
+    match t.kind {
+        IRT_VOID => return "void";
+        IRT_PTR => return "void *";
+        IRT_INT => {
+            if t.bits == 8 {
+                return "int8_t";
+            }
+            if t.bits == 32 {
+                return "int32_t";
+            }
+            return "int64_t";
+        }
+        IRT_FLOAT => {
+            if t.bits == 32 {
+                return "float";
+            }
+            return "double";
+        }
+        _ => return "void *";
+    }
+}
+
+fn ir_type_size(IrType* t) -> u32 {
+    if t == null {
+        return 0;
+    }
+    match t.kind {
+        IRT_INT => return t.bits / 8;
+        IRT_FLOAT => return t.bits / 8;
+        IRT_PTR => return 8;
+        IRT_ARRAY => return (t.length.as(u32)) * ir_type_size(t.elem);
+        _ => return 0;
+    }
+}
+
+fn c_value(IrValue* v) -> void {
+    if v == null {
+        printf("0");
+        return;
+    }
+    if v.kind == IRV_CONST_INT.as(i32) {
+        printf("%lld", v.ival.as(i64));
+        return;
+    }
+    printf("%s", v.name);
+}
+
+fn c_instr(IrInstr* in) -> void {
+    printf("    ");
+    match in.op {
+        IR_ALLOCA => {
+            printf("%s = &storage_%s;\n", in.result.name, in.result.name);
+        }
+        IR_LOAD => {
+            printf("%s = *(%s *)", in.result.name, c_type(in.type_arg));
+            c_value(in.a);
+            printf(";\n");
+        }
+        IR_STORE => {
+            printf("*(%s *)", c_type(in.type_arg));
+            c_value(in.b);
+            printf(" = ");
+            c_value(in.a);
+            printf(";\n");
+        }
+        IR_RET => {
+            if in.a == null {
+                printf("return;\n");
+            } else {
+                printf("return ");
+                c_value(in.a);
+                printf(";\n");
+            }
+        }
+        IR_BR => printf("goto %s;\n", in.dest.name);
+        IR_CONDBR => {
+            printf("if (");
+            c_value(in.a);
+            printf(") goto %s; else goto %s;\n", in.dest.name, in.dest2.name);
+        }
+        IR_CALL => {
+            if in.result != null {
+                printf("%s = ", in.result.name);
+            }
+            printf("%s(", in.callee.name);
+            let mut i32 i = 0;
+            while i < in.nargs {
+                if i != 0 {
+                    printf(", ");
+                }
+                c_value(in.args[i]);
+                i += 1;
+            }
+            printf(");\n");
+        }
+        _ => {
+            printf("%s = ", in.result.name);
+            c_value(in.a);
+            match in.op {
+                IR_ADD => printf(" + ");
+                IR_SUB => printf(" - ");
+                IR_MUL => printf(" * ");
+                IR_SDIV => printf(" / ");
+                IR_ICMP_LT => printf(" < ");
+                IR_ICMP_EQ => printf(" == ");
+                _ => printf(" + ");
+            }
+            c_value(in.b);
+            printf(";\n");
+        }
+    }
+}
+
+fn c_signature(IrFunction* f) -> void {
+    printf("%s %s(", c_type(f.ret), f.name);
+    if f.nparams == 0 && f.is_vararg == 0 {
+        printf("void");
+    }
+    let mut i32 i = 0;
+    while i < f.nparams {
+        if i != 0 {
+            printf(", ");
+        }
+        printf("%s %s", c_type(f.params[i].type), f.params[i].name);
+        i += 1;
+    }
+    if f.is_vararg != 0 {
+        if f.nparams != 0 {
+            printf(", ...");
+        } else {
+            printf("...");
+        }
+    }
+    printf(")");
+}
+
+# A label nothing jumps to is an unused-label warning, and every block ends
+# in a terminator, so an untargeted one was unreachable anyway.
+fn block_is_target(IrFunction* f, IrBlock* target) -> b8 {
+    let mut IrBlock* b = f.first;
+    while b != null {
+        let mut IrInstr* in = b.first;
+        while in != null {
+            if in.dest == target || in.dest2 == target {
+                return true;
+            }
+            in = in.next;
+        }
+        b = b.next;
+    }
+    return false;
+}
+
+fn c_emit(IrModule* m) -> void {
+    printf("/* generated from %s by the stage1 C backend */\n", m.name);
+    printf("#include <stdint.h>\n#include <stddef.h>\n\n");
+
+    let mut IrFunction* f = m.functions;
+    while f != null {
+        c_signature(f);
+        printf(";\n");
+        f = f.next;
+    }
+
+    f = m.functions;
+    while f != null {
+        if f.is_declaration == 0 {
+            printf("\n");
+            c_signature(f);
+            printf(" {\n");
+
+            # Declarations first: C wants them before the statements, and an
+            # SSA value is always defined before it is used.
+            let mut IrBlock* b = f.first;
+            while b != null {
+                let mut IrInstr* in = b.first;
+                while in != null {
+                    if in.op == IR_ALLOCA.as(i32) {
+                        let u32 size = ir_type_size(in.type_arg);
+                        let mut u32 slots = (size + 7) / 8;
+                        if slots == 0 {
+                            slots = 1;
+                        }
+                        printf("    uint64_t storage_%s[%u];\n", in.result.name, slots);
+                    }
+                    if in.result != null {
+                        printf("    %s %s;\n", c_type(in.result.type), in.result.name);
+                    }
+                    in = in.next;
+                }
+                b = b.next;
+            }
+
+            b = f.first;
+            while b != null {
+                if block_is_target(f, b) {
+                    printf("%s:;\n", b.name);
+                }
+                let mut IrInstr* in = b.first;
+                while in != null {
+                    c_instr(in);
+                    in = in.next;
+                }
+                b = b.next;
+            }
+            printf("}\n");
+        }
+        f = f.next;
+    }
+}
+
+# Builds sum_to(n) = 0+1+...+(n-1) and a main that returns sum_to(10) - 9,
+# so the emitted C must exit with 36. Same shape and same number as the C
+# side's ir_demo, so the two can be compared directly.
+fn ir_demo() -> i32 {
+    let Arena* arena = arena_new(262144);
+    let IrModule* m = ir_module_new(arena, "demo.slop");
+
+    let IrType** params = arena_alloc(arena, 8).as(IrType**);
+    params[0] = m.ty_i32;
+    let IrFunction* sum_to = ir_function_new(m, "sum_to", m.ty_i32, params, 1, 0);
+
+    let mut IrBuilder bl;
+    bl.m = m;
+    bl.func = sum_to;
+
+    let IrBlock* entry = ir_block_new(m, sum_to, "entry");
+    let IrBlock* cond = ir_block_new(m, sum_to, "cond");
+    let IrBlock* body = ir_block_new(m, sum_to, "body");
+    let IrBlock* done = ir_block_new(m, sum_to, "done");
+
+    bl.block = entry;
+    let IrValue* total = ir_alloca(&bl, m.ty_i32);
+    let IrValue* i = ir_alloca(&bl, m.ty_i32);
+    ir_store(&bl, ir_const_int(m, m.ty_i32, 0), total);
+    ir_store(&bl, ir_const_int(m, m.ty_i32, 0), i);
+    ir_br(&bl, cond);
+
+    bl.block = cond;
+    let IrValue* iv = ir_load(&bl, m.ty_i32, i);
+    let IrValue* c = ir_cmp(&bl, IR_ICMP_LT.as(i32), iv, sum_to.params[0]);
+    ir_condbr(&bl, c, body, done);
+
+    bl.block = body;
+    let IrValue* tv = ir_load(&bl, m.ty_i32, total);
+    let IrValue* iv2 = ir_load(&bl, m.ty_i32, i);
+    ir_store(&bl, ir_binary(&bl, IR_ADD.as(i32), tv, iv2), total);
+    ir_store(&bl, ir_binary(&bl, IR_ADD.as(i32), iv2, ir_const_int(m, m.ty_i32, 1)), i);
+    ir_br(&bl, cond);
+
+    bl.block = done;
+    ir_ret(&bl, ir_load(&bl, m.ty_i32, total));
+
+    let IrFunction* main_fn = ir_function_new(m, "main", m.ty_i32, null, 0, 0);
+    bl.func = main_fn;
+    bl.block = ir_block_new(m, main_fn, "entry");
+    let IrValue** args = arena_alloc(arena, 8).as(IrValue**);
+    args[0] = ir_const_int(m, m.ty_i32, 10);
+    let IrValue* sum = ir_call(&bl, sum_to, args, 1);
+    ir_ret(&bl, ir_binary(&bl, IR_SUB.as(i32), sum, ir_const_int(m, m.ty_i32, 9)));
+
+    c_emit(m);
+    return 0;
+}

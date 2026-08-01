@@ -38,10 +38,8 @@ passed=0
 failed=0
 
 # ---- build the slop lexer with the C compiler ----------------------------
-if ! "$slop" --backend=c "$root/stage1/lexer.slop" "$root/stage1/ast.slop" \
-    "$root/stage1/types.slop" "$root/stage1/parser.slop" "$root/stage1/sema.slop" \
-    "$root/stage1/dump.slop" \
-    "$root/stage1/main.slop" \
+# Every stage1 source, so adding one never needs this list edited again.
+if ! "$slop" --backend=c "$root"/stage1/*.slop \
     > "$work/stage1.c" 2> "$work/emit.log" || [ -s "$work/emit.log" ]; then
     echo "FAIL    stage1 did not compile"
     sed 's/^/        /' "$work/emit.log"
@@ -191,6 +189,35 @@ if "$work/stage1-lex" --types > "$work/types.got" 2>&1 &&
 else
     echo "FAIL    stage1 type layout differs"
     sed 's/^/        /' "$work/types.diff"
+    failed=$((failed + 1))
+fi
+
+# ---- the IR and the C backend ---------------------------------------------
+# stage1 builds a module by hand and emits C from it. That C is compiled and
+# run: the module computes 45 - 9, so it must exit 36. Same module and same
+# number as the C side's ir_demo, so the two backends can be compared.
+if "$work/stage1-lex" --ir > "$work/gen.c" 2> "$work/ir.log" && [ ! -s "$work/ir.log" ]; then
+    if "$cc" -std=c99 -Wall -Wextra -fno-builtin -o "$work/gen" "$work/gen.c" \
+        2> "$work/gencc.log" && [ ! -s "$work/gencc.log" ]; then
+        set +e
+        "$work/gen"
+        gen_status=$?
+        set -e
+        if [ "$gen_status" -eq 36 ]; then
+            echo "ok      stage1's C backend emits code that runs (exit 36)"
+            passed=$((passed + 1))
+        else
+            echo "FAIL    stage1 backend output exited $gen_status, expected 36"
+            failed=$((failed + 1))
+        fi
+    else
+        echo "FAIL    stage1 backend output did not compile cleanly"
+        sed 's/^/        /' "$work/gencc.log"
+        failed=$((failed + 1))
+    fi
+else
+    echo "FAIL    stage1 --ir failed"
+    sed 's/^/        /' "$work/ir.log"
     failed=$((failed + 1))
 fi
 
