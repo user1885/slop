@@ -138,6 +138,38 @@ if [ "$failed" -eq 0 ]; then
     echo "ok      stage1 sema accepts and rejects the same files as the C one"
 fi
 
+# ---- the front end on itself ----------------------------------------------
+# The whole point of stage1: its lexer, parser and sema, compiled from slop,
+# accepting the slop they are written in. All seven files go through together,
+# which also exercises cross-file name resolution.
+set +e
+"$slop" "$root"/stage1/*.slop > /dev/null 2>&1
+c_status=$?
+"$work/stage1-lex" --check "$root"/stage1/*.slop > /dev/null 2>&1
+s_status=$?
+set -e
+if [ "$c_status" -eq 0 ] && [ "$s_status" -eq 0 ]; then
+    echo "ok      stage1's front end type-checks its own source"
+    passed=$((passed + 1))
+else
+    echo "FAIL    stage1 on itself (C $c_status, stage1 $s_status)"
+    failed=$((failed + 1))
+fi
+
+# Two files compiled together, where main uses names declared only in lib.
+set +e
+"$work/stage1-lex" --check "$root/tests/multi/main.slop" "$root/tests/multi/lib.slop" \
+    > /dev/null 2>&1
+s_status=$?
+set -e
+if [ "$s_status" -eq 0 ]; then
+    echo "ok      stage1 resolves names across files"
+    passed=$((passed + 1))
+else
+    echo "FAIL    stage1 multi-file name resolution"
+    failed=$((failed + 1))
+fi
+
 # ---- the type universe ----------------------------------------------------
 # Layout is a guarantee in GRAMMAR.md section 6, not an implementation
 # detail, so the ported type table has to compute exactly what the C

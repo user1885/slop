@@ -193,11 +193,13 @@ depends on it, so a disagreement here would break the tree, not just a size.
 
 Sema is checked on its **verdict**, not its wording: the same files are
 accepted and the same ones rejected. Diagnostics are not compared, because
-stage1 words them differently and does not recover. Two known gaps behind
-that: stage1's driver compiles one file at a time, so a program split across
-files cannot be checked in one invocation the way the C compiler does; and
-sema does not insert the conversion nodes the C version does, because stage1
-has no backend to consume them yet.
+stage1 words them differently and does not recover. One known gap behind that: sema does not insert the conversion nodes the C
+version does, because stage1 has no backend to consume them yet.
+
+**stage1's front end type-checks its own source.** All seven files go through
+together — the slop lexer, parser and sema accepting the slop they are
+written in, with names resolved across files. That is the milestone the
+language exists for, and it is a test rather than a claim.
 
 Error *recovery* is not ported. The C parser resynchronises at statement,
 member and item boundaries to report many errors per run; stage1 reports the

@@ -1043,7 +1043,10 @@ fn check_bodies(Sema* s, Program* prog) -> void {
     }
 }
 
-fn sema_check(Arena* arena, Program* prog) -> i32 {
+# Every file goes through together. Pass 2 has to see every top level before
+# pass 4 checks any body, which is exactly what makes declaration order --
+# and file order -- irrelevant.
+fn sema_check_all(Arena* arena, Program** progs, i32 nprogs) -> i32 {
     let mut Sema s;
     s.arena = arena;
     s.globals = null;
@@ -1054,13 +1057,36 @@ fn sema_check(Arena* arena, Program* prog) -> i32 {
     s.clocals = 0;
     s.loop_depth = 0;
     s.errors = 0;
-    s.file = prog.file;
+    s.file = progs[0].file;
     types_init(&s.tt, arena);
 
-    collect_globals(&s, prog);
-    resolve_signatures(&s, prog);
+    let mut i32 i = 0;
+    while i < nprogs {
+        s.file = progs[i].file;
+        collect_globals(&s, progs[i]);
+        i += 1;
+    }
+
+    i = 0;
+    while i < nprogs {
+        s.file = progs[i].file;
+        resolve_signatures(&s, progs[i]);
+        i += 1;
+    }
+
     if s.errors == 0 {
-        check_bodies(&s, prog);
+        i = 0;
+        while i < nprogs {
+            s.file = progs[i].file;
+            check_bodies(&s, progs[i]);
+            i += 1;
+        }
     }
     return s.errors;
+}
+
+fn sema_check(Arena* arena, Program* prog) -> i32 {
+    let Program** one = arena_alloc(arena, 8).as(Program**);
+    one[0] = prog;
+    return sema_check_all(arena, one, 1);
 }

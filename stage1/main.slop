@@ -231,6 +231,62 @@ fn types_check() -> i32 {
     return 0;
 }
 
+# Parses every file, then checks them as one program -- which is what makes
+# a struct declared in another file usable here.
+fn check_all(i32 argc, u8** argv) -> i32 {
+    let Arena* arena = arena_new(1048576);
+    let Program** progs = arena_alloc(arena, (argc.as(u64)) * 8).as(Program**);
+    let mut i32 nprogs = 0;
+    let mut i32 i = 1;
+
+    while i < argc {
+        if argv[i][0] != '-' {
+            let mut i64 len = 0;
+            let u8* src = read_file(argv[i], &len);
+            if src == null {
+                return 1;
+            }
+            let mut Lexer l;
+            lexer_init(&l, argv[i], src, len);
+
+            let mut Token* toks = null;
+            let mut i32 ntoks = 0;
+            lex_all(&l, &toks, &ntoks);
+
+            let mut Parser p;
+            p.toks = toks;
+            p.ntoks = ntoks;
+            p.pos = 0;
+            p.arena = arena;
+            p.file = argv[i];
+            p.errors = 0;
+
+            let Program* prog = arena_alloc(arena, sizeof(Program)).as(Program*);
+            let i32 perrors = parse_program(&p, prog);
+            if perrors != 0 {
+                fprintf(err(), "%d error(s)\n", perrors);
+                fflush(err());
+                return 1;
+            }
+            progs[nprogs] = prog;
+            nprogs += 1;
+        }
+        i += 1;
+    }
+
+    if nprogs == 0 {
+        return 2;
+    }
+
+    let i32 errors = sema_check_all(arena, progs, nprogs);
+    if errors != 0 {
+        fprintf(err(), "%d error(s)\n", errors);
+        fflush(err());
+        return 1;
+    }
+    return 0;
+}
+
 fn main(i32 argc, u8** argv) -> i32 {
     if argc < 2 {
         fprintf(err(), "usage: stage1-lex <file.slop>...\n");
@@ -258,6 +314,9 @@ fn main(i32 argc, u8** argv) -> i32 {
 
     if do_types {
         return types_check();
+    }
+    if g_check {
+        return check_all(argc, argv);
     }
 
     i = 1;
