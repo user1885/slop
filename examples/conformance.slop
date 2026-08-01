@@ -296,6 +296,133 @@ fn check_strings() -> void {
     check("string length", len.as(i64), 4);
 }
 
+
+# ------------------------------------------------------------- floats
+
+fn check_floats() -> void {
+    let f64 a = 7.5;
+    let f64 b = 2.0;
+
+    check("float add", (a + b).as(i64), 9);
+    check("float sub", (a - b).as(i64), 5);
+    check("float mul", (a * b).as(i64), 15);
+    check("float div", (a / b).as(i64), 3);
+    check("float compare lt", (a < b).as(i64), 0);
+    check("float compare ge", (a >= b).as(i64), 1);
+    check("float equality", (a == 7.5).as(i64), 1);
+    check("float negation", (-a).as(i64), -7);
+
+    let f32 narrow = 0.5;
+    check("f32 round trip", (narrow.as(f64) * 4.0).as(i64), 2);
+
+    let mut f64 acc = 0.0;
+    let mut i32 i = 0;
+    while i < 4 {
+        acc += 0.25;
+        i += 1;
+    }
+    check("float accumulate", acc.as(i64), 1);
+}
+
+# --------------------------------------------------------- wide integers
+
+fn check_wide() -> void {
+    let u64 big = 18446744073709551615;
+    let u64 half = big / 2;
+
+    check("u64 max halved", (half == 9223372036854775807).as(i64), 1);
+    check("u64 wraps on add", ((big + 1) == 0).as(i64), 1);
+    check("u64 compare", (big > 1).as(i64), 1);
+
+    let i64 lo = -9223372036854775807;
+    check("i64 negative", (lo < 0).as(i64), 1);
+
+    # A shift amount can be a variable, not just a literal.
+    let mut i32 shift = 0;
+    let mut u64 acc = 1;
+    while shift < 10 {
+        acc <<= 1;
+        shift += 1;
+    }
+    check("variable shift", acc.as(i64), 1024);
+    check("shift right back", (acc >> 10).as(i64), 1);
+}
+
+# ----------------------------------------------------------- recursion
+
+fn fib(i32 n) -> i64 {
+    if n < 2 {
+        return n.as(i64);
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn gcd(i64 a, i64 b) -> i64 {
+    if b == 0 {
+        return a;
+    }
+    return gcd(b, a % b);
+}
+
+fn check_recursion() -> void {
+    check("fib(10)", fib(10), 55);
+    check("fib(20)", fib(20), 6765);
+    check("gcd", gcd(1071, 462), 21);
+}
+
+# ------------------------------------------------- aggregates in aggregates
+
+struct Inner { i32 a; i32 b; }
+struct Outer { Inner one; Inner two; i64[3] tail; }
+
+fn check_deep() -> void {
+    let mut Outer o;
+    o.one.a = 1;
+    o.one.b = 2;
+    o.two.a = 3;
+    o.two.b = 4;
+    o.tail[0] = 10;
+    o.tail[1] = 20;
+    o.tail[2] = 30;
+
+    check("nested struct field", (o.one.a + o.two.b).as(i64), 5);
+    check("array inside struct", o.tail[1], 20);
+    check("sizeof nested", (sizeof(Outer)).as(i64), 40);
+
+    # Copying the outer struct copies everything inside it.
+    let mut Outer copy;
+    copy = o;
+    o.tail[1] = 99;
+    check("deep copy is a copy", copy.tail[1], 20);
+    check("deep copy nested", (copy.two.a).as(i64), 3);
+
+    let Inner* p = &o.two;
+    check("pointer into a struct", (p.a + p.b).as(i64), 7);
+}
+
+# The b8/b32/b64 family are distinct widths, and conditions take any of them.
+fn check_bools() -> void {
+    let b8 small = true;
+    let b32 medium = false;
+    let b64 wide = true;
+
+    let mut i64 seen = 0;
+    if small {
+        seen += 1;
+    }
+    if medium {
+        seen += 10;
+    }
+    if wide {
+        seen += 100;
+    }
+    check("bool widths in conditions", seen, 101);
+    check("bool from comparison", (1 < 2).as(i64), 1);
+    check("negated bool", (!small).as(i64), 0);
+    check("bool and", (small && wide).as(i64), 1);
+    check("bool or", (medium || wide).as(i64), 1);
+}
+
 fn main() -> i32 {
     printf("slop conformance\n\n");
 
@@ -310,6 +437,11 @@ fn main() -> i32 {
     check_pointers();
     check_prefix();
     check_strings();
+    check_floats();
+    check_wide();
+    check_recursion();
+    check_deep();
+    check_bools();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
     if g_failures != 0 {

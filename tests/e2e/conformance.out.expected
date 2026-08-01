@@ -59,5 +59,35 @@ ok   payload intact               1234
 ok   string first byte            115
 ok   string is nul terminated     0
 ok   string length                4
+ok   float add                    9
+ok   float sub                    5
+ok   float mul                    15
+ok   float div                    3
+ok   float compare lt             0
+ok   float compare ge             1
+ok   float equality               1
+ok   float negation               -7
+ok   f32 round trip               2
+ok   float accumulate             1
+ok   u64 max halved               1
+ok   u64 wraps on add             1
+ok   u64 compare                  1
+ok   i64 negative                 1
+ok   variable shift               1024
+ok   shift right back             1
+ok   fib(10)                      55
+ok   fib(20)                      6765
+ok   gcd                          21
+ok   nested struct field          5
+ok   array inside struct          20
+ok   sizeof nested                40
+ok   deep copy is a copy          20
+ok   deep copy nested             3
+ok   pointer into a struct        7
+ok   bool widths in conditions    101
+ok   bool from comparison         1
+ok   negated bool                 0
+ok   bool and                     1
+ok   bool or                      1
 
-59 checks, 0 failures
+89 checks, 0 failures
