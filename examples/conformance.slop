@@ -423,6 +423,32 @@ fn check_bools() -> void {
     check("bool or", (medium || wide).as(i64), 1);
 }
 
+# There is no fallthrough in a match, and `break` inside one belongs to the
+# enclosing loop rather than to the match — GRAMMAR.md section 4 says so, and
+# nothing else here checks it.
+fn match_in_loop() -> i64 {
+    let mut i64 sum = 0;
+    let mut i32 i = 0;
+    while i < 10 {
+        i += 1;
+        match i {
+            3 => continue;
+            7 => break;
+            _ => {
+                let i64 add = i.as(i64);
+                sum += add;
+            }
+        }
+        sum += 100;
+    }
+    return sum;
+}
+
+fn check_match_control() -> void {
+    # 1+100, 2+100, (3 continues), 4+100, 5+100, 6+100, then 7 breaks.
+    check("break and continue in match", match_in_loop(), 518);
+}
+
 fn main() -> i32 {
     printf("slop conformance\n\n");
 
@@ -442,6 +468,7 @@ fn main() -> i32 {
     check_recursion();
     check_deep();
     check_bools();
+    check_match_control();
 
     printf("\n%d checks, %d failures\n", g_checks, g_failures);
     if g_failures != 0 {

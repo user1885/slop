@@ -89,5 +89,6 @@ ok   bool from comparison         1
 ok   negated bool                 0
 ok   bool and                     1
 ok   bool or                      1
+ok   break and continue in match  518
 
-89 checks, 0 failures
+90 checks, 0 failures

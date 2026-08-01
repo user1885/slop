@@ -152,7 +152,7 @@ ctest --test-dir build
   pipeline on *both* backends, to native binaries, run, and required to agree
   with each other and with the golden output.
 
-`examples/conformance.slop` is the language's own test: 89 checks with known
+`examples/conformance.slop` is the language's own test: 90 checks with known
 answers that report themselves and set the exit status.
 
 Run both backends rather than trusting either. They fail differently, and each
