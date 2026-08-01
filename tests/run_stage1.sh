@@ -39,7 +39,8 @@ failed=0
 
 # ---- build the slop lexer with the C compiler ----------------------------
 if ! "$slop" --backend=c "$root/stage1/lexer.slop" "$root/stage1/ast.slop" \
-    "$root/stage1/types.slop" "$root/stage1/parser.slop" "$root/stage1/dump.slop" \
+    "$root/stage1/types.slop" "$root/stage1/parser.slop" "$root/stage1/sema.slop" \
+    "$root/stage1/dump.slop" \
     "$root/stage1/main.slop" \
     > "$work/stage1.c" 2> "$work/emit.log" || [ -s "$work/emit.log" ]; then
     echo "FAIL    stage1 did not compile"
@@ -108,6 +109,33 @@ done
 
 if [ "$failed" -eq 0 ]; then
     echo "ok      stage1 parser builds trees identical to the C parser"
+fi
+
+# ---- sema -----------------------------------------------------------------
+# One file at a time, because stage1's driver does not yet compile several
+# together. Diagnostics are not compared: stage1 words them differently and
+# does not recover, so what is checked is the verdict -- the same files are
+# accepted and the same ones rejected.
+for src in "$root"/examples/*.slop "$root"/tests/cases/sema_*.slop \
+    "$root"/tests/cases/parse_*.slop; do
+    [ -f "$src" ] || continue
+    name=$(basename "$src")
+    set +e
+    "$slop" "$src" > /dev/null 2>&1
+    c_status=$?
+    "$work/stage1-lex" --check "$src" > /dev/null 2>&1
+    s_status=$?
+    set -e
+    if [ "$c_status" -eq "$s_status" ]; then
+        passed=$((passed + 1))
+    else
+        echo "FAIL    $name: sema verdicts differ (C $c_status, stage1 $s_status)"
+        failed=$((failed + 1))
+    fi
+done
+
+if [ "$failed" -eq 0 ]; then
+    echo "ok      stage1 sema accepts and rejects the same files as the C one"
 fi
 
 # ---- the type universe ----------------------------------------------------

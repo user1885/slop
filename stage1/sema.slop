@@ -1,0 +1,1066 @@
+# stage1/sema.slop — passes 2 to 4, in slop.
+#
+# Global name collection, type resolution and body checking, following
+# GRAMMAR.md section 7. The three are separate because a body may call a
+# function declared five hundred lines below it and a struct field may name a
+# struct from another file, so nothing can be checked until every name is
+# known.
+#
+# Symbol tables are flat arrays searched backwards rather than hash maps.
+# That is a real difference from the C version, which uses one: at the sizes
+# this compiler sees it costs nothing measurable, and a map is a data
+# structure to port and get wrong before any of sema can be tested at all.
+#
+# What is *not* here, deliberately: the C version inserts an EXPR_CONV node
+# for every implicit conversion so the backend never re-derives one. stage1
+# has no backend yet, so there is nothing to insert them for, and inventing
+# a representation before it has a consumer is how it ends up wrong.
+
+# Both sides point into the source and neither is NUL-terminated, so
+# name_is (which wants a NUL-terminated needle) is the wrong tool here.
+fn bytes_eq(u8* a, i32 alen, u8* b, i32 blen) -> b8 {
+    if alen != blen {
+        return false;
+    }
+    let mut i32 i = 0;
+    while i < alen {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+enum SymKind { SYM_VAR, SYM_FN, SYM_STRUCT, SYM_ENUM, SYM_ENUM_MEMBER }
+
+struct Sym {
+    i32 kind;
+    u8* name;
+    i32 name_len;
+    Ty* type;         # SYM_VAR: its type. SYM_FN: the return type.
+    i32 is_mut;
+    Item* decl;
+    u64 value;        # SYM_ENUM_MEMBER
+    Ty* owner;        # SYM_ENUM_MEMBER: the enum it belongs to
+    i32 line;
+    i32 col;
+}
+
+struct Sema {
+    Arena* arena;
+    TypeTable tt;
+
+    Sym* globals;
+    i32 nglobals;
+    i32 cglobals;
+
+    Sym* locals;
+    i32 nlocals;
+    i32 clocals;
+
+    Ty* cur_ret;
+    i32 loop_depth;
+    i32 errors;
+    u8* file;
+}
+
+fn sema_error(Sema* s, i32 line, i32 col, u8* msg) -> void {
+    fprintf(err(), "%s:%d:%d: error: %s\n", s.file, line, col, msg);
+    fflush(err());
+    s.errors += 1;
+}
+
+fn sema_error_ty(Sema* s, i32 line, i32 col, u8* prefix, Ty* a, u8* mid, Ty* b) -> void {
+    fprintf(err(), "%s:%d:%d: error: %s", s.file, line, col, prefix);
+    fflush(err());
+    ty_print(a);
+    printf("");
+    fprintf(err(), "%s", mid);
+    fflush(err());
+    ty_print(b);
+    fprintf(err(), "\n");
+    fflush(err());
+    s.errors += 1;
+}
+
+fn push_global(Sema* s, i32 kind, u8* name, i32 len, Ty* type, Item* decl, i32 line, i32 col)
+    -> Sym* {
+    if s.nglobals == s.cglobals {
+        let mut i32 want = s.cglobals * 2;
+        if want < 64 {
+            want = 64;
+        }
+        let Sym* bigger = arena_alloc(s.arena, (want.as(u64)) * sizeof(Sym)).as(Sym*);
+        let mut i32 i = 0;
+        while i < s.nglobals {
+            bigger[i] = s.globals[i];
+            i += 1;
+        }
+        s.globals = bigger;
+        s.cglobals = want;
+    }
+    let Sym* sym = &s.globals[s.nglobals];
+    sym.kind = kind;
+    sym.name = name;
+    sym.name_len = len;
+    sym.type = type;
+    sym.decl = decl;
+    sym.is_mut = 0;
+    sym.value = 0;
+    sym.owner = null;
+    sym.line = line;
+    sym.col = col;
+    s.nglobals += 1;
+    return sym;
+}
+
+fn find_global(Sema* s, u8* name, i32 len) -> Sym* {
+    let mut i32 i = 0;
+    while i < s.nglobals {
+        if bytes_eq(s.globals[i].name, s.globals[i].name_len, name, len) {
+            return &s.globals[i];
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn push_local(Sema* s, u8* name, i32 len, Ty* type, i32 is_mut, i32 line, i32 col) -> void {
+    if s.nlocals == s.clocals {
+        let mut i32 want = s.clocals * 2;
+        if want < 64 {
+            want = 64;
+        }
+        let Sym* bigger = arena_alloc(s.arena, (want.as(u64)) * sizeof(Sym)).as(Sym*);
+        let mut i32 i = 0;
+        while i < s.nlocals {
+            bigger[i] = s.locals[i];
+            i += 1;
+        }
+        s.locals = bigger;
+        s.clocals = want;
+    }
+    s.locals[s.nlocals].kind = SYM_VAR.as(i32);
+    s.locals[s.nlocals].name = name;
+    s.locals[s.nlocals].name_len = len;
+    s.locals[s.nlocals].type = type;
+    s.locals[s.nlocals].is_mut = is_mut;
+    s.locals[s.nlocals].line = line;
+    s.locals[s.nlocals].col = col;
+    s.nlocals += 1;
+}
+
+# Innermost first, so an inner block shadows an outer name.
+fn find_local(Sema* s, u8* name, i32 len) -> Sym* {
+    let mut i32 i = s.nlocals;
+    while i > 0 {
+        i -= 1;
+        if bytes_eq(s.locals[i].name, s.locals[i].name_len, name, len) {
+            return &s.locals[i];
+        }
+    }
+    return null;
+}
+
+# ------------------------------------------------------- type resolution
+
+fn resolve_type(Sema* s, Type* t) -> Ty* {
+    if t == null {
+        return ty_core(&s.tt, TY_POISON.as(i32));
+    }
+    match t.kind {
+        TYPE_CORE => return ty_from_token(&s.tt, t.core);
+        TYPE_POINTER => return ty_ptr(&s.tt, resolve_type(s, t.elem));
+        TYPE_ARRAY => {
+            let Ty* elem = resolve_type(s, t.elem);
+            if !ty_is_sized(elem) {
+                sema_error(s, 0, 0, "array element type has no size");
+                return ty_core(&s.tt, TY_POISON.as(i32));
+            }
+            return ty_array(&s.tt, elem, t.length);
+        }
+        TYPE_NAME => {
+            let Sym* sym = find_global(s, t.name, t.name_len);
+            if sym == null {
+                fprintf(err(), "%s: error: unknown type '%.*s'\n", s.file, t.name_len, t.name);
+                fflush(err());
+                s.errors += 1;
+                return ty_core(&s.tt, TY_POISON.as(i32));
+            }
+            if sym.kind != SYM_STRUCT.as(i32) && sym.kind != SYM_ENUM.as(i32) {
+                fprintf(err(), "%s: error: '%.*s' is not a type\n", s.file, t.name_len, t.name);
+                fflush(err());
+                s.errors += 1;
+                return ty_core(&s.tt, TY_POISON.as(i32));
+            }
+            return sym.type;
+        }
+        _ => return ty_core(&s.tt, TY_POISON.as(i32));
+    }
+}
+
+# Fields are laid out on demand, and a struct marked in-progress that is
+# reached again contains itself by value -- recursion through a pointer is
+# fine, because a pointer's size does not depend on what it points to.
+fn layout_struct(Sema* s, Ty* t) -> void {
+    if t.state == LAYOUT_DONE.as(i32) {
+        return;
+    }
+    if t.state == LAYOUT_IN_PROGRESS.as(i32) {
+        fprintf(err(), "%s: error: struct '%.*s' contains itself; use a pointer\n", s.file,
+                t.name_len, t.name);
+        fflush(err());
+        s.errors += 1;
+        t.state = LAYOUT_DONE.as(i32);
+        return;
+    }
+
+    t.state = LAYOUT_IN_PROGRESS.as(i32);
+    let ItemStruct* decl = t.decl.as(ItemStruct*);
+    let FieldSym* fields = arena_alloc(s.arena,
+                                       ((decl.nfields + 1).as(u64)) * sizeof(FieldSym))
+                               .as(FieldSym*);
+    let mut i32 i = 0;
+    while i < decl.nfields {
+        let Ty* ft = resolve_type(s, decl.fields[i].type);
+        if ft.kind == TY_STRUCT.as(i32) {
+            layout_struct(s, ft);
+        }
+        if !ty_is_sized(ft) {
+            fprintf(err(), "%s: error: field '%.*s' has no size\n", s.file,
+                    decl.fields[i].name_len, decl.fields[i].name);
+            fflush(err());
+            s.errors += 1;
+        }
+        fields[i].name = decl.fields[i].name;
+        fields[i].name_len = decl.fields[i].name_len;
+        fields[i].type = ft;
+        fields[i].offset = 0;
+        i += 1;
+    }
+    ty_layout_struct(t, fields, decl.nfields);
+}
+
+# ------------------------------------------------------------ assignability
+
+# Widening within a signedness is implicit; everything else needs .as(T).
+fn assignable(Sema* s, Ty* from, Ty* to) -> b8 {
+    if from == null || to == null {
+        return true;
+    }
+    if from == to {
+        return true;
+    }
+    if from.kind == TY_POISON.as(i32) || to.kind == TY_POISON.as(i32) {
+        return true;
+    }
+
+    # null goes into any pointer.
+    if from.kind == TY_NULL.as(i32) && to.kind == TY_PTR.as(i32) {
+        return true;
+    }
+    # An untyped literal adopts the context type when it fits.
+    if from.kind == TY_UNTYPED_INT.as(i32) {
+        return ty_is_integer(to) || ty_is_float(to);
+    }
+    if from.kind == TY_UNTYPED_FLOAT.as(i32) {
+        return ty_is_float(to);
+    }
+    if from.kind == TY_UNTYPED_BOOL.as(i32) {
+        return ty_is_bool(to);
+    }
+    # An enum is its underlying type's value, but not the other way round.
+    if from.kind == TY_ENUM.as(i32) && to.kind == TY_ENUM.as(i32) {
+        return from == to;
+    }
+    if ty_is_integer(from) && ty_is_integer(to) {
+        # Same signedness, and no narrowing. Written out rather than
+        # compared: slop does not let two bools be compared with each other.
+        let b8 from_signed = ty_is_signed(from);
+        let b8 to_signed = ty_is_signed(to);
+        if from_signed && !to_signed {
+            return false;
+        }
+        if to_signed && !from_signed {
+            return false;
+        }
+        return from.size <= to.size;
+    }
+    if ty_is_float(from) && ty_is_float(to) {
+        return from.size <= to.size;
+    }
+    if ty_is_bool(from) && ty_is_bool(to) {
+        return from.size <= to.size;
+    }
+    return false;
+}
+
+fn require_assignable(Sema* s, Ty* from, Ty* to, i32 line, i32 col, u8* what) -> void {
+    if assignable(s, from, to) {
+        return;
+    }
+    fprintf(err(), "%s:%d:%d: error: cannot convert ", s.file, line, col);
+    fflush(err());
+    ty_print(from);
+    fprintf(err(), " to ");
+    fflush(err());
+    ty_print(to);
+    fprintf(err(), " implicitly in %s; use '.as(...)'\n", what);
+    fflush(err());
+    s.errors += 1;
+}
+
+# --------------------------------------------------------------- expressions
+
+fn check_expr(Sema* s, Expr* e) -> Ty* {
+    if e == null {
+        return ty_core(&s.tt, TY_POISON.as(i32));
+    }
+
+    let mut Ty* result = ty_core(&s.tt, TY_POISON.as(i32));
+
+    match e.kind {
+        EXPR_INT => result = ty_core(&s.tt, TY_UNTYPED_INT.as(i32));
+        EXPR_CHAR => result = ty_core(&s.tt, TY_UNTYPED_INT.as(i32));
+        EXPR_FLOAT => result = ty_core(&s.tt, TY_UNTYPED_FLOAT.as(i32));
+        EXPR_BOOL => result = ty_core(&s.tt, TY_UNTYPED_BOOL.as(i32));
+        EXPR_NULL => result = ty_core(&s.tt, TY_NULL.as(i32));
+        EXPR_STRING => result = ty_ptr(&s.tt, ty_core(&s.tt, TY_U8.as(i32)));
+
+        EXPR_NAME => {
+            let ExprText* n = e.as(ExprText*);
+            let mut Sym* sym = find_local(s, n.text, n.len);
+            if sym == null {
+                sym = find_global(s, n.text, n.len);
+            }
+            if sym == null {
+                fprintf(err(), "%s:%d:%d: error: undeclared name '%.*s'\n", s.file, e.line, e.col,
+                        n.len, n.text);
+                fflush(err());
+                s.errors += 1;
+            } else {
+                if sym.kind == SYM_ENUM_MEMBER.as(i32) {
+                    result = sym.owner;
+                } else {
+                    result = sym.type;
+                }
+            }
+        }
+
+        EXPR_UNARY => {
+            let ExprUnary* u = e.as(ExprUnary*);
+            let Ty* operand = check_expr(s, u.operand);
+            if u.op == TOK_AMP.as(i32) {
+                result = ty_ptr(&s.tt, operand);
+            } else {
+                if u.op == TOK_STAR.as(i32) {
+                    if operand.kind != TY_PTR.as(i32) {
+                        sema_error(s, e.line, e.col, "cannot dereference a non-pointer");
+                    } else {
+                        result = operand.elem;
+                    }
+                } else {
+                    if u.op == TOK_BANG.as(i32) {
+                        if !ty_is_bool(operand) {
+                            sema_error(s, e.line, e.col, "'!' needs a bool");
+                        }
+                        result = operand;
+                    } else {
+                        if !ty_is_numeric_ty(operand) {
+                            sema_error(s, e.line, e.col, "this operator needs a number");
+                        }
+                        result = operand;
+                    }
+                }
+            }
+        }
+
+        EXPR_BINARY => {
+            let ExprBinary* b = e.as(ExprBinary*);
+            result = check_binary(s, b);
+        }
+
+        EXPR_CALL => {
+            let ExprCall* c = e.as(ExprCall*);
+            result = check_call(s, c);
+        }
+
+        EXPR_INDEX => {
+            let ExprIndex* x = e.as(ExprIndex*);
+            let Ty* base = check_expr(s, x.base);
+            let Ty* idx = check_expr(s, x.index);
+            if !ty_is_integer(idx) {
+                sema_error(s, e.line, e.col, "an index must be an integer");
+            }
+            if base.kind == TY_PTR.as(i32) || base.kind == TY_ARRAY.as(i32) {
+                result = base.elem;
+            } else {
+                sema_error(s, e.line, e.col, "cannot index this");
+            }
+        }
+
+        EXPR_FIELD => {
+            let ExprField* f = e.as(ExprField*);
+            let mut Ty* base = check_expr(s, f.base);
+            # One level of pointer is stripped automatically: there is no ->.
+            if base.kind == TY_PTR.as(i32) {
+                base = base.elem;
+            }
+            if base.kind != TY_STRUCT.as(i32) {
+                sema_error(s, e.line, e.col, "field access on something that is not a struct");
+            } else {
+                let FieldSym* fs = ty_field(base, f.name, f.name_len);
+                if fs == null {
+                    fprintf(err(), "%s:%d:%d: error: no field '%.*s'\n", s.file, e.line, e.col,
+                            f.name_len, f.name);
+                    fflush(err());
+                    s.errors += 1;
+                } else {
+                    result = fs.type;
+                }
+            }
+        }
+
+        EXPR_CAST => {
+            let ExprType* c = e.as(ExprType*);
+            check_expr(s, c.operand);
+            result = resolve_type(s, c.type);
+        }
+
+        EXPR_SIZEOF => {
+            let ExprType* z = e.as(ExprType*);
+            let Ty* t = resolve_type(s, z.type);
+            if t.kind == TY_STRUCT.as(i32) {
+                layout_struct(s, t);
+            }
+            result = ty_core(&s.tt, TY_U64.as(i32));
+        }
+
+        _ => result = ty_core(&s.tt, TY_POISON.as(i32));
+    }
+
+    e.sem_type = result;
+    return result;
+}
+
+fn ty_is_numeric_ty(Ty* t) -> b8 {
+    return ty_is_integer(t) || ty_is_float(t);
+}
+
+fn is_comparison_op(i32 op) -> b8 {
+    return op == TOK_EQ_EQ.as(i32) || op == TOK_BANG_EQ.as(i32) || op == TOK_LT.as(i32)
+        || op == TOK_LE.as(i32) || op == TOK_GT.as(i32) || op == TOK_GE.as(i32);
+}
+
+fn is_logical_op(i32 op) -> b8 {
+    return op == TOK_AMP_AMP.as(i32) || op == TOK_PIPE_PIPE.as(i32);
+}
+
+# The wider of two types when both are untyped, or the typed one when only
+# one is. This is where a literal takes its context.
+fn unify(Sema* s, Ty* a, Ty* b) -> Ty* {
+    if a == b {
+        return a;
+    }
+    if ty_is_untyped(a) && !ty_is_untyped(b) {
+        return b;
+    }
+    if ty_is_untyped(b) && !ty_is_untyped(a) {
+        return a;
+    }
+    if a.size >= b.size {
+        return a;
+    }
+    return b;
+}
+
+fn check_binary(Sema* s, ExprBinary* b) -> Ty* {
+    let Expr* e = b.as(Expr*);
+    let Ty* lhs = check_expr(s, b.lhs);
+    let Ty* rhs = check_expr(s, b.rhs);
+
+    if is_logical_op(b.op) {
+        if !ty_is_bool(lhs) || !ty_is_bool(rhs) {
+            sema_error(s, e.line, e.col, "'&&' and '||' need bools");
+        }
+        return unify(s, lhs, rhs);
+    }
+
+    if is_comparison_op(b.op) {
+        # A pointer may be compared with null or another pointer.
+        if lhs.kind == TY_PTR.as(i32) || rhs.kind == TY_PTR.as(i32) {
+            return ty_core(&s.tt, TY_UNTYPED_BOOL.as(i32));
+        }
+        # Bools do not compare with each other at all, not even with ==:
+        # `a < b == c` is a precedence mistake far more often than it is an
+        # intention, and && is what combining conditions is for.
+        if ty_is_bool(lhs) || ty_is_bool(rhs) {
+            sema_error(s, e.line, e.col, "cannot compare bool with bool");
+            return ty_core(&s.tt, TY_UNTYPED_BOOL.as(i32));
+        }
+        if !ty_is_numeric_ty(lhs) || !ty_is_numeric_ty(rhs) {
+            sema_error(s, e.line, e.col, "cannot compare these");
+        }
+        return ty_core(&s.tt, TY_UNTYPED_BOOL.as(i32));
+    }
+
+    # Pointer arithmetic: p + n, p - n and p - q.
+    if lhs.kind == TY_PTR.as(i32) {
+        if b.op == TOK_PLUS.as(i32) || b.op == TOK_MINUS.as(i32) {
+            if rhs.kind == TY_PTR.as(i32) {
+                return ty_core(&s.tt, TY_I64.as(i32));
+            }
+            if ty_is_integer(rhs) {
+                return lhs;
+            }
+        }
+        sema_error(s, e.line, e.col, "this operator does not apply to a pointer");
+        return lhs;
+    }
+
+    if !ty_is_numeric_ty(lhs) || !ty_is_numeric_ty(rhs) {
+        sema_error(s, e.line, e.col, "this operator needs numbers");
+        return lhs;
+    }
+    let b8 lhs_float = ty_is_float(lhs);
+    let b8 rhs_float = ty_is_float(rhs);
+    if lhs_float && !rhs_float {
+        sema_error(s, e.line, e.col, "cannot mix integer and float");
+        return lhs;
+    }
+    if rhs_float && !lhs_float {
+        sema_error(s, e.line, e.col, "cannot mix integer and float");
+        return lhs;
+    }
+    if !ty_is_untyped(lhs) && !ty_is_untyped(rhs) && lhs != rhs {
+        require_assignable(s, rhs, lhs, e.line, e.col, "this operation");
+    }
+    return unify(s, lhs, rhs);
+}
+
+fn check_call(Sema* s, ExprCall* c) -> Ty* {
+    let Expr* e = c.as(Expr*);
+    if c.callee.kind != EXPR_NAME.as(i32) {
+        sema_error(s, e.line, e.col, "only a named function can be called");
+        return ty_core(&s.tt, TY_POISON.as(i32));
+    }
+
+    let ExprText* name = c.callee.as(ExprText*);
+    let Sym* sym = find_global(s, name.text, name.len);
+    if sym == null || sym.kind != SYM_FN.as(i32) {
+        fprintf(err(), "%s:%d:%d: error: undeclared function '%.*s'\n", s.file, e.line, e.col,
+                name.len, name.text);
+        fflush(err());
+        s.errors += 1;
+        return ty_core(&s.tt, TY_POISON.as(i32));
+    }
+
+    let ItemFn* decl = sym.decl.as(ItemFn*);
+    let mut i32 i = 0;
+    while i < c.nargs {
+        let Ty* arg = check_expr(s, c.args[i]);
+        if i < decl.nparams {
+            let Ty* want = resolve_type(s, decl.params[i].type);
+            require_assignable(s, arg, want, c.args[i].line, c.args[i].col, "this argument");
+        }
+        i += 1;
+    }
+
+    if c.nargs < decl.nparams {
+        sema_error(s, e.line, e.col, "too few arguments");
+    }
+    if c.nargs > decl.nparams && decl.is_variadic == 0 {
+        sema_error(s, e.line, e.col, "too many arguments");
+    }
+    return sym.type;
+}
+
+# ---------------------------------------------------------------- lvalues
+
+# Checked by the shape of the tree, not by the grammar refusing to parse it,
+# so `a + b = 5` gets a diagnostic instead of "unexpected token".
+fn check_lvalue(Sema* s, Expr* e) -> void {
+    if e == null {
+        return;
+    }
+    if e.kind == EXPR_NAME.as(i32) {
+        let ExprText* n = e.as(ExprText*);
+        let mut Sym* sym = find_local(s, n.text, n.len);
+        if sym == null {
+            sym = find_global(s, n.text, n.len);
+        }
+        if sym != null && sym.kind == SYM_VAR.as(i32) && sym.is_mut == 0 {
+            fprintf(err(), "%s:%d:%d: error: '%.*s' is not mutable; declare it with 'let mut'\n",
+                    s.file, e.line, e.col, n.len, n.text);
+            fflush(err());
+            s.errors += 1;
+        }
+        if sym != null && sym.kind == SYM_ENUM_MEMBER.as(i32) {
+            sema_error(s, e.line, e.col, "cannot assign to an enum member");
+        }
+        return;
+    }
+    if e.kind == EXPR_INDEX.as(i32) || e.kind == EXPR_FIELD.as(i32) {
+        return;
+    }
+    if e.kind == EXPR_UNARY.as(i32) && e.as(ExprUnary*).op == TOK_STAR.as(i32) {
+        return;
+    }
+    sema_error(s, e.line, e.col, "cannot assign to this expression");
+}
+
+# --------------------------------------------------------------- statements
+
+# Whether every path out of this statement returns. A match counts only when
+# it has a wildcard and every arm diverges, which is what stops a function
+# ending in one from demanding an unreachable trailing return.
+fn always_returns(Stmt* st) -> b8 {
+    if st == null {
+        return false;
+    }
+    if st.kind == STMT_RETURN.as(i32) {
+        return true;
+    }
+    if st.kind == STMT_BLOCK.as(i32) {
+        let StmtBlock* b = st.as(StmtBlock*);
+        let mut i32 i = 0;
+        while i < b.nstmts {
+            if always_returns(b.stmts[i]) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+    if st.kind == STMT_IF.as(i32) {
+        let StmtIf* f = st.as(StmtIf*);
+        if f.else_stmt == null {
+            return false;
+        }
+        return always_returns(f.then_block) && always_returns(f.else_stmt);
+    }
+    if st.kind == STMT_MATCH.as(i32) {
+        let StmtMatch* m = st.as(StmtMatch*);
+        let mut b8 has_wildcard = false;
+        let mut b8 all_return = true;
+        let mut i32 a = 0;
+        while a < m.narms {
+            let mut i32 j = 0;
+            while j < m.arms[a].nlabels {
+                if m.arms[a].labels[j] == null {
+                    has_wildcard = true;
+                }
+                j += 1;
+            }
+            if !always_returns(m.arms[a].body) {
+                all_return = false;
+            }
+            a += 1;
+        }
+        return has_wildcard && all_return;
+    }
+    return false;
+}
+
+fn check_condition(Sema* s, Expr* cond, u8* what) -> void {
+    let Ty* t = check_expr(s, cond);
+    if !ty_is_bool(t) && t.kind != TY_POISON.as(i32) {
+        fprintf(err(), "%s:%d:%d: error: the condition of '%s' must be a bool; write 'x != 0'\n",
+                s.file, cond.line, cond.col, what);
+        fflush(err());
+        s.errors += 1;
+    }
+}
+
+fn check_stmt(Sema* s, Stmt* st) -> void {
+    if st == null {
+        return;
+    }
+
+    match st.kind {
+        STMT_BLOCK => {
+            let StmtBlock* b = st.as(StmtBlock*);
+            let i32 mark = s.nlocals;
+            let mut i32 i = 0;
+            while i < b.nstmts {
+                check_stmt(s, b.stmts[i]);
+                i += 1;
+            }
+            s.nlocals = mark;      # block scoping is a stack mark
+        }
+
+        STMT_VAR => {
+            let StmtVar* v = st.as(StmtVar*);
+            let Ty* t = resolve_type(s, v.type);
+            if t.kind == TY_STRUCT.as(i32) {
+                layout_struct(s, t);
+            }
+            if v.init != null {
+                let Ty* init = check_expr(s, v.init);
+                require_assignable(s, init, t, st.line, st.col, "this initializer");
+            } else {
+                if v.is_mut == 0 {
+                    fprintf(err(),
+                            "%s:%d:%d: error: '%.*s' has no initializer, so it must be 'let mut'\n",
+                            s.file, st.line, st.col, v.name_len, v.name);
+                    fflush(err());
+                    s.errors += 1;
+                }
+            }
+            push_local(s, v.name, v.name_len, t, v.is_mut, st.line, st.col);
+        }
+
+        STMT_IF => {
+            let StmtIf* f = st.as(StmtIf*);
+            check_condition(s, f.cond, "if");
+            check_stmt(s, f.then_block);
+            check_stmt(s, f.else_stmt);
+        }
+
+        STMT_WHILE => {
+            let StmtWhile* w = st.as(StmtWhile*);
+            check_condition(s, w.cond, "while");
+            s.loop_depth += 1;
+            check_stmt(s, w.body);
+            s.loop_depth -= 1;
+        }
+
+        STMT_MATCH => {
+            let StmtMatch* m = st.as(StmtMatch*);
+            let Ty* scrutinee = check_expr(s, m.scrutinee);
+            if !ty_is_integer(scrutinee) && scrutinee.kind != TY_POISON.as(i32) {
+                sema_error(s, st.line, st.col, "match needs an integer or enum value");
+            }
+            let mut i32 a = 0;
+            while a < m.narms {
+                let mut i32 j = 0;
+                while j < m.arms[a].nlabels {
+                    let Expr* label = m.arms[a].labels[j];
+                    if label != null {
+                        if label.kind == EXPR_NAME.as(i32) {
+                            let ExprText* n = label.as(ExprText*);
+                            let Sym* sym = find_global(s, n.text, n.len);
+                            if sym == null || sym.kind != SYM_ENUM_MEMBER.as(i32) {
+                                fprintf(err(),
+                                        "%s:%d:%d: error: '%.*s' is not an enum member; a match label must be a constant\n",
+                                        s.file, label.line, label.col, n.len, n.text);
+                                fflush(err());
+                                s.errors += 1;
+                            }
+                            label.sem_type = scrutinee;
+                        } else {
+                            if label.kind != EXPR_INT.as(i32) && label.kind != EXPR_CHAR.as(i32) {
+                                sema_error(s, label.line, label.col,
+                                           "a match label must be a constant");
+                            }
+                            check_expr(s, label);
+                        }
+                    }
+                    j += 1;
+                }
+                let i32 mark = s.nlocals;
+                check_stmt(s, m.arms[a].body);
+                s.nlocals = mark;
+                a += 1;
+            }
+        }
+
+        STMT_RETURN => {
+            let StmtExpr* r = st.as(StmtExpr*);
+            if r.value == null {
+                if s.cur_ret.kind != TY_VOID.as(i32) {
+                    sema_error(s, st.line, st.col, "this function must return a value");
+                }
+            } else {
+                let Ty* got = check_expr(s, r.value);
+                if s.cur_ret.kind == TY_VOID.as(i32) {
+                    sema_error(s, st.line, st.col, "a void function cannot return a value");
+                } else {
+                    require_assignable(s, got, s.cur_ret, st.line, st.col, "this return");
+                }
+            }
+        }
+
+        STMT_BREAK => {
+            if s.loop_depth == 0 {
+                sema_error(s, st.line, st.col, "'break' outside a loop");
+            }
+        }
+
+        STMT_CONTINUE => {
+            if s.loop_depth == 0 {
+                sema_error(s, st.line, st.col, "'continue' outside a loop");
+            }
+        }
+
+        STMT_EXPR => {
+            check_expr(s, st.as(StmtExpr*).value);
+        }
+
+        STMT_ASSIGN => {
+            let StmtAssign* a = st.as(StmtAssign*);
+            let Ty* target = check_expr(s, a.target);
+            check_lvalue(s, a.target);
+            let Ty* value = check_expr(s, a.value);
+            if a.op == TOK_EQ.as(i32) {
+                require_assignable(s, value, target, st.line, st.col, "this assignment");
+            } else {
+                if target.kind == TY_PTR.as(i32) {
+                    if !ty_is_integer(value) {
+                        sema_error(s, st.line, st.col, "pointer arithmetic needs an integer");
+                    }
+                } else {
+                    require_assignable(s, value, target, st.line, st.col, "this assignment");
+                }
+            }
+        }
+
+        _ => return;
+    }
+}
+
+# ------------------------------------------------- pass 2: collect names
+
+fn collect_fn(Sema* s, Item* it) -> void {
+    let ItemFn* f = it.as(ItemFn*);
+    let Sym* existing = find_global(s, f.name, f.name_len);
+    if existing != null {
+        fprintf(err(), "%s:%d:%d: error: duplicate declaration of '%.*s'\n", s.file, it.line,
+                it.col, f.name_len, f.name);
+        fflush(err());
+        s.errors += 1;
+        return;
+    }
+    push_global(s, SYM_FN.as(i32), f.name, f.name_len, null, it, it.line, it.col);
+}
+
+fn collect_globals(Sema* s, Program* prog) -> void {
+    let mut i32 i = 0;
+    while i < prog.nitems {
+        let Item* it = prog.items[i];
+        if it == null {
+            i += 1;
+        } else {
+            match it.kind {
+                ITEM_STRUCT => {
+                    let ItemStruct* d = it.as(ItemStruct*);
+                    if find_global(s, d.name, d.name_len) != null {
+                        fprintf(err(), "%s:%d:%d: error: duplicate declaration of '%.*s'\n",
+                                s.file, it.line, it.col, d.name_len, d.name);
+                        fflush(err());
+                        s.errors += 1;
+                    } else {
+                        let Ty* t = ty_struct_new(&s.tt, d.name, d.name_len, it);
+                        let Sym* sym = push_global(s, SYM_STRUCT.as(i32), d.name, d.name_len, t, it,
+                                                   it.line, it.col);
+                        sym.type = t;
+                    }
+                }
+                ITEM_ENUM => {
+                    let ItemEnum* d = it.as(ItemEnum*);
+                    if find_global(s, d.name, d.name_len) != null {
+                        fprintf(err(), "%s:%d:%d: error: duplicate declaration of '%.*s'\n",
+                                s.file, it.line, it.col, d.name_len, d.name);
+                        fflush(err());
+                        s.errors += 1;
+                    } else {
+                        let Ty* base = ty_from_token(&s.tt, d.base);
+                        let Ty* t = ty_enum_new(&s.tt, d.name, d.name_len, base);
+                        push_global(s, SYM_ENUM.as(i32), d.name, d.name_len, t, it, it.line,
+                                    it.col);
+
+                        # Members land in the global namespace, numbered from
+                        # zero unless overridden, later members continuing
+                        # from the last explicit one.
+                        let EnumSym* members = arena_alloc(s.arena,
+                                                           ((d.nmembers + 1).as(u64))
+                                                               * sizeof(EnumSym))
+                                                   .as(EnumSym*);
+                        let mut u64 next = 0;
+                        let mut i32 m = 0;
+                        while m < d.nmembers {
+                            if d.members[m].has_value != 0 {
+                                next = d.members[m].value;
+                            }
+                            if !ty_int_fits_size(base, next) {
+                                fprintf(err(), "%s: error: enum value %llu does not fit\n", s.file,
+                                        next);
+                                fflush(err());
+                                s.errors += 1;
+                            }
+                            members[m].name = d.members[m].name;
+                            members[m].name_len = d.members[m].name_len;
+                            members[m].value = next;
+
+                            let Sym* ms = push_global(s, SYM_ENUM_MEMBER.as(i32),
+                                                      d.members[m].name, d.members[m].name_len, t,
+                                                      it, it.line, it.col);
+                            ms.value = next;
+                            ms.owner = t;
+
+                            next += 1;
+                            m += 1;
+                        }
+                        t.members = members;
+                        t.nmembers = d.nmembers;
+                    }
+                }
+                ITEM_FN => collect_fn(s, it);
+                ITEM_EXTERN => {
+                    let ItemExtern* x = it.as(ItemExtern*);
+                    let mut i32 j = 0;
+                    while j < x.nfns {
+                        collect_fn(s, x.fns[j]);
+                        j += 1;
+                    }
+                }
+                ITEM_GLOBAL => {
+                    let ItemGlobal* g = it.as(ItemGlobal*);
+                    if find_global(s, g.name, g.name_len) != null {
+                        fprintf(err(), "%s:%d:%d: error: duplicate declaration of '%.*s'\n",
+                                s.file, it.line, it.col, g.name_len, g.name);
+                        fflush(err());
+                        s.errors += 1;
+                    } else {
+                        let Sym* sym = push_global(s, SYM_VAR.as(i32), g.name, g.name_len, null, it,
+                                                   it.line, it.col);
+                        sym.is_mut = g.is_mut;
+                    }
+                }
+                _ => return;
+            }
+            i += 1;
+        }
+    }
+}
+
+fn ty_int_fits_size(Ty* t, u64 v) -> b8 {
+    if t == null {
+        return true;
+    }
+    if t.size >= 8 {
+        return true;
+    }
+    let u64 limit = (1.as(u64) << (t.size.as(u64) * 8)) - 1;
+    return v <= limit;
+}
+
+# ------------------------------------- pass 3: resolve types and signatures
+
+fn resolve_signatures(Sema* s, Program* prog) -> void {
+    let mut i32 i = 0;
+    while i < s.nglobals {
+        let Sym* sym = &s.globals[i];
+        if sym.kind == SYM_STRUCT.as(i32) {
+            layout_struct(s, sym.type);
+        }
+        i += 1;
+    }
+
+    i = 0;
+    while i < s.nglobals {
+        let Sym* sym = &s.globals[i];
+        if sym.kind == SYM_FN.as(i32) {
+            let ItemFn* f = sym.decl.as(ItemFn*);
+            sym.type = resolve_type(s, f.ret);
+            # A struct may not cross a function boundary by value: that
+            # removes SysV argument classification from every backend.
+            if sym.type.kind == TY_STRUCT.as(i32) {
+                fprintf(err(), "%s:%d:%d: error: a struct cannot be returned by value\n", s.file,
+                        sym.line, sym.col);
+                fflush(err());
+                s.errors += 1;
+            }
+            let mut i32 p = 0;
+            while p < f.nparams {
+                let Ty* pt = resolve_type(s, f.params[p].type);
+                if pt.kind == TY_STRUCT.as(i32) {
+                    layout_struct(s, pt);
+                    fprintf(err(), "%s:%d:%d: error: a struct cannot be passed by value\n", s.file,
+                            sym.line, sym.col);
+                    fflush(err());
+                    s.errors += 1;
+                }
+                p += 1;
+            }
+        }
+        if sym.kind == SYM_VAR.as(i32) && sym.decl != null
+            && sym.decl.kind == ITEM_GLOBAL.as(i32) {
+            let ItemGlobal* g = sym.decl.as(ItemGlobal*);
+            sym.type = resolve_type(s, g.type);
+            if sym.type.kind == TY_STRUCT.as(i32) {
+                layout_struct(s, sym.type);
+            }
+        }
+        i += 1;
+    }
+}
+
+# ------------------------------------------------- pass 4: check bodies
+
+fn check_bodies(Sema* s, Program* prog) -> void {
+    let mut i32 i = 0;
+    while i < prog.nitems {
+        let Item* it = prog.items[i];
+        if it != null && it.kind == ITEM_FN.as(i32) {
+            let ItemFn* f = it.as(ItemFn*);
+            if f.has_body != 0 {
+                s.nlocals = 0;
+                s.loop_depth = 0;
+                s.cur_ret = resolve_type(s, f.ret);
+
+                let mut i32 p = 0;
+                while p < f.nparams {
+                    push_local(s, f.params[p].name, f.params[p].name_len,
+                               resolve_type(s, f.params[p].type), f.params[p].is_mut, it.line,
+                               it.col);
+                    p += 1;
+                }
+
+                check_stmt(s, f.body);
+
+                if s.cur_ret.kind != TY_VOID.as(i32) && !always_returns(f.body) {
+                    fprintf(err(), "%s:%d:%d: error: missing return in '%.*s'\n", s.file, it.line,
+                            it.col, f.name_len, f.name);
+                    fflush(err());
+                    s.errors += 1;
+                }
+            }
+        }
+        if it != null && it.kind == ITEM_GLOBAL.as(i32) {
+            let ItemGlobal* g = it.as(ItemGlobal*);
+            if g.init != null {
+                s.nlocals = 0;
+                let Ty* got = check_expr(s, g.init);
+                let Sym* sym = find_global(s, g.name, g.name_len);
+                if sym != null {
+                    require_assignable(s, got, sym.type, it.line, it.col, "this initializer");
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+fn sema_check(Arena* arena, Program* prog) -> i32 {
+    let mut Sema s;
+    s.arena = arena;
+    s.globals = null;
+    s.nglobals = 0;
+    s.cglobals = 0;
+    s.locals = null;
+    s.nlocals = 0;
+    s.clocals = 0;
+    s.loop_depth = 0;
+    s.errors = 0;
+    s.file = prog.file;
+    types_init(&s.tt, arena);
+
+    collect_globals(&s, prog);
+    resolve_signatures(&s, prog);
+    if s.errors == 0 {
+        check_bodies(&s, prog);
+    }
+    return s.errors;
+}

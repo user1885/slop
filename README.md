@@ -163,9 +163,9 @@ backend refused.
 
 ## stage1: slop in slop
 
-`stage1/` is the compiler being rewritten in its own language. The lexer, the
-parser, the AST dumper and sema's type universe are done; the rest of sema,
-the IR and the backends are not:
+`stage1/` is the compiler being rewritten in its own language. The front end
+is done — lexer, parser, AST dumper, and sema's three passes. The IR, lowering
+and the backends are not:
 
 ```bash
 slop --backend=c stage1/lexer.slop stage1/main.slop > stage1.c
@@ -190,6 +190,14 @@ own `sizeof`: interning holds, and `i32`, `i32*`, `i32[10]`, `u8[3]` and a
 padded struct all lay out identically. That matters more than it looks —
 GRAMMAR.md makes layout a guarantee because the AST's common-prefix trick
 depends on it, so a disagreement here would break the tree, not just a size.
+
+Sema is checked on its **verdict**, not its wording: the same files are
+accepted and the same ones rejected. Diagnostics are not compared, because
+stage1 words them differently and does not recover. Two known gaps behind
+that: stage1's driver compiles one file at a time, so a program split across
+files cannot be checked in one invocation the way the C compiler does; and
+sema does not insert the conversion nodes the C version does, because stage1
+has no backend to consume them yet.
 
 Error *recovery* is not ported. The C parser resynchronises at statement,
 member and item boundaries to report many errors per run; stage1 reports the

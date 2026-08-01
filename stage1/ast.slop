@@ -125,55 +125,56 @@ struct Expr {
     i32 kind;
     i32 line;
     i32 col;
+    Ty* sem_type;      # filled by sema; null until then
 }
 
 struct ExprLit {      # int, char, bool: ival. float: fval.
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     u64 ival;
     f64 fval;
 }
 
 struct ExprText {     # string and name: the bytes
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     u8* text;
     i32 len;
 }
 
 struct ExprUnary {
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     i32 op;
     Expr* operand;
 }
 
 struct ExprBinary {
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     i32 op;
     Expr* lhs;
     Expr* rhs;
 }
 
 struct ExprCall {
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     Expr* callee;
     Expr** args;
     i32 nargs;
 }
 
 struct ExprIndex {
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     Expr* base;
     Expr* index;
 }
 
 struct ExprField {
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     Expr* base;
     u8* name;
     i32 name_len;
 }
 
 struct ExprType {     # cast: operand + type. sizeof: type only.
-    i32 kind; i32 line; i32 col;
+    i32 kind; i32 line; i32 col; Ty* sem_type;
     Expr* operand;
     Type* type;
 }

@@ -276,7 +276,7 @@ fn ty_layout_struct(Ty* t, FieldSym* fields, i32 nfields) -> void {
 fn ty_field(Ty* t, u8* name, i32 len) -> FieldSym* {
     let mut i32 i = 0;
     while i < t.nfields {
-        if t.fields[i].name_len == len && name_is(t.fields[i].name, len, name) {
+        if bytes_eq(t.fields[i].name, t.fields[i].name_len, name, len) {
             return &t.fields[i];
         }
         i += 1;
